@@ -1,4 +1,6 @@
 #!/usr/bin/perl
+#RedRep Utility fasta-abbrev.pl
+#Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
 
 open(DAT,$ARGV[0]);
 open(NEW,"> ".$ARGV[1]);

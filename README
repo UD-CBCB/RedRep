@@ -1,1 +1,60 @@
-This repository is for RedRep.
+RedRep README
+Package Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
+
+ABOUT RedRep:
+
+
+
+INSTALLATION:
+
+The RedRep package has been designed and tested on the Fedora operating system (v19-23), but should run under most standard UNIX/Linux-based operating systems including Mac OS X. 
+
+The following software are required for various steps in the RedRep pipeline and must also be installed and be present in the system PATH.  Version information below is the highest version currently tested:
+
+  bwa (0.7.5a)
+  cutadapt (1.8.1)
+  fastx toolkit (0.0.13)
+  GATK (3.4-0)
+  Java Runtime Environment - JRE (Open JDK JRE 1.7.0_71)
+  Perl (5.16.3)
+  Picard tools (1.67)
+  samtools (1.3)
+  usearch (5.2.32; must be accessible in the system PATH as "usearch5")
+  usearch (8.1.1691; must be accessible in the system PATH as "usearch8")
+
+  BOTH usearch versions are currently required to run redrep-cluster.pl
+
+The following Perl libraries are required and must be accessible by Perl:
+
+  File::Basename
+  Getopt::Long
+  Parallel::ForkManager +
+  Pod::Usage
+  POSIX::strftime +
+
+  + - Library not included in many default Perl installations
+
+No installation script is currently provided, the git repository should be cloned to the system.  
+
+  git clone https://github.com/spolson/RedRep
+
+The following commands should be placed in the user profile (.bashrc).  Be sure to replace "/path/to/" with actual locations:
+
+  export REDREPBIN=/path/to/RedRep                            # PATH to RedRep top level directory
+  export PICARDJARS="/path/to/picard-tools"                   # PATH to directory containing Picard Tools JARS
+  export GATKJAR="/path/to/GATK/GenomeAnalysisTK.jar"         # PATH to GATK GenomeAnalysisTK.jar
+  export PATH=${PATH}:${REDREPBIN}:${REDREPBIN}/utilities
+
+
+
+
+USAGE:
+
+The RedRep pipeline represents a flexible collection of utilities which can be combined in various ways to suit the needs of a given project.  Each primary script includes documentation for how to run.  Two possible workflows are indicated below:
+
+Mapping to an existing genome:
+redrep-qc.pl -> redrep-refmap.pl -> redrep-SNPcall.pl
+
+Mapping to a denovo reference:
+redrep-qc.pl -> redrep-cluster.pl -> redrep-refmap.pl -> redrep-SNPcall.pl
+

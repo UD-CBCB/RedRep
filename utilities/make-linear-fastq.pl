@@ -1,6 +1,7 @@
 #!/usr/bin/perl -w
+#RedRep Utility make-linear-fastq.pl
+#Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
 
-#mergelines.pl
 
 use strict;
 

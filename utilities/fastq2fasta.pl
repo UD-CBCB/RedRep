@@ -1,4 +1,6 @@
 #!/usr/bin/perl
+#RedRep Utility fastq2fasta.pl
+#Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
 
 $i=0;
 while(<>)

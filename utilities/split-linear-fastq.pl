@@ -1,7 +1,6 @@
 #!/usr/bin/perl -w
-
-#splitlines.pl
-
+#RedRep Utility split-linear-fastq.pl
+#Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
 
 use strict;
 
