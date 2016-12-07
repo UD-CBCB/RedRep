@@ -1,24 +1,42 @@
-RedRep README
-Package Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
+RedRep: a computational pipeline for analysis of reduced representation sequencing libraries
 
-ABOUT RedRep:
+Shawn Polson, Keith Hopper, Randall Wisser
+Package Copyright 2016
 
+1. INTRODUCTION
+2. INSTALLATION
+3. RUNNING UTILITIES
+4. REFERENCES
 
+1. INTRODUCTION
 
-INSTALLATION:
+RedRep is a computational pipeline originally designed for analysis of double-digest reduced representation genomic libraries that are custom barcoded (single digest libraries can be analyzed too). Such libraries can be used in genetic and phylogenetic analyses. The initial inputs are a file or files of reads in fastq format, a metafile giving sample identifiers, barcode sequences, and restriction site information and a reference sequence to be used for mapping. The output is a list of called variants in vcf format. The RedRep pipeline is a flexible collection of utilities which can be combined in various ways to suit the needs of a given project. Each primary script includes documentation for how to run. Two workflows are indicated below:
 
-The RedRep package has been designed and tested on the Fedora operating system (v19-23), but should run under most standard UNIX/Linux-based operating systems including Mac OS X. 
+Mapping to an existing reference:
+redrep-qc.pl -> redrep-refmap.pl -> redrep-SNPcall.pl
 
-The following software are required for various steps in the RedRep pipeline and must also be installed and be present in the system PATH.  Version information below is the highest version currently tested:
+Mapping to a de novo reference:
+redrep-qc.pl -> redrep-cluster.pl -> redrep-refmap.pl -> redrep-SNPcall.pl
 
-  bwa (0.7.5a)
-  cutadapt (1.8.1)
+2. INSTALLATION
+
+The RedRep package has been designed and tested on the Fedora operating system (v19-23), but should run under most standard UNIX/Linux-based operating systems including Mac OS X.
+
+The scripts for the pipeline and documentation are available under the open source MIT license. No installation script is currently provided, so the git repository should be cloned to the system.
+
+  git clone https://github.com/spolson/RedRep
+
+The following software are required for various steps in the RedRep pipeline and must also be installed and be present in the system PATH. Version information below is the highest version currently tested:
+
+  BWA (BWA-MEM is used) (0.7.13-r1126)
+  cutadapt (1.9.1)
+  fastqc (0.11.5)
   fastx toolkit (0.0.13)
-  GATK (3.4-0)
-  Java Runtime Environment - JRE (Open JDK JRE 1.7.0_71)
-  Perl (5.16.3)
-  Picard tools (1.67)
-  samtools (1.3)
+  GATK (3.5-0)
+  Java Runtime Environment - JRE (Open JDK JRE 1.8.0_111-b16)
+  Perl (5.22.2)
+  Picard tools (2.4.1)
+  samtools (1.3.1)
   usearch (5.2.32; must be accessible in the system PATH as "usearch5")
   usearch (8.1.1691; must be accessible in the system PATH as "usearch8")
 
@@ -34,27 +52,51 @@ The following Perl libraries are required and must be accessible by Perl:
 
   + - Library not included in many default Perl installations
 
-No installation script is currently provided, the git repository should be cloned to the system.  
+The following commands should be placed in the user profile (.bashrc). Be sure to replace "/path/to/" with actual locations:
 
-  git clone https://github.com/spolson/RedRep
+# PATH to RedRep top level directory
+export REDREPBIN=/path/to/RedRep
+# PATH to directory containing Picard Tools
+export PICARDJARS="/path/to/picard-tools"
+# PATH to GATK GenomeAnalysisTK.jar
+export GATKJAR="/path/to/GATK/GenomeAnalysisTK.jar"
+export PATH=${PATH}:${REDREPBIN}:${REDREPBIN}/utilities
 
-The following commands should be placed in the user profile (.bashrc).  Be sure to replace "/path/to/" with actual locations:
+3. RUNNING UTILITIES
 
-  export REDREPBIN=/path/to/RedRep                            # PATH to RedRep top level directory
-  export PICARDJARS="/path/to/picard-tools"                   # PATH to directory containing Picard Tools JARS
-  export GATKJAR="/path/to/GATK/GenomeAnalysisTK.jar"         # PATH to GATK GenomeAnalysisTK.jar
-  export PATH=${PATH}:${REDREPBIN}:${REDREPBIN}/utilities
+Quality evaluation, trimming, and barcode devolution of sequences in fastq format are done with redrep-qc.pl; the output is a set of fastq files named according to the identifiers in the metadata file and suitable for mapping to a reference. The command syntax is:
 
+	redrep-qc.pl --in=READ1_FILENAME [--in2 READ2_FILENAME]
+		--out =IRNAME --meta=FILENAME [OPTIONS --log=FILENAME --stats=FILENAME
+		--force --keep_temp --no_pre_qc --no_post_qc --per_barcode_qc
+		--5p_adapt SEQUENCE --3p_adapt SEQUENCE --maxLen=INTEGER
+		--minLen=INTEGER --max_N_run=INTEGER --part=INTEGER --mismatch=INTEGER
+		--qual=INTEGER(0-93) --threads=INTEGER --debug --version --help --manual]
 
+The metafile is tab-delimited and has the following variables (indicated in the header row): unique_id, p1_recog_site, p1_hang_seq, p1_index_seq, p2_recog_site, p2_hang_seq, [p2_index_seq]. Missing values should be indicated with N/A and ambiguous nucleotides with N.
 
+Making a de novo reference from the input reads is done with redrep-cluster.pl, which accepts as input fastq output for one sample from redrep-qc.pl (fastq files from multiple samples can be manually combined with the cat command), performs clustering of reduced representation reads without a priori reference, and makes reference sequence file in fasta format (the centroid sequences are typically used as the reference). The command line syntax is:
 
-USAGE:
+	redrep-cluster.pl --in=FILENAME [--in2=FILENAME]--out=DIRNAME --meta=FILENAME
+		[OPTIONS --log=FILENAME --force --keep_temp --id=FLOAT --minlen=INTEGER
+		--minqual=INTEGER --minsize=INTEGER --hist_stats --size_bin_start=INTEGER
+		--size_bin_num=INTEGER --size_bin_width=INTEGER --len_bin_start=INTEGER
+		--len_bin_num=INTEGER --len_bin_width=INTEGER --debug --version --help --manual]
 
-The RedRep pipeline represents a flexible collection of utilities which can be combined in various ways to suit the needs of a given project.  Each primary script includes documentation for how to run.  Two possible workflows are indicated below:
+Mappping to a references (existing or de novo) is done with redrep-refmap.pl, which accepts fastq output from redrep-qc.pl and fasta-formatted reference sequence(s) and produces indexed bam files for analysis with redrep-SNPcall.pl. The command line syntax is:
 
-Mapping to an existing genome:
-redrep-qc.pl -> redrep-refmap.pl -> redrep-SNPcall.pl
+	redrep-refmap.pl --in=FILE_OR_DIR_NAME --out DIRNAME --ref=FILENAME
+		[OPTIONS --log=FILENAME --force --keep_temp --ndiff=INTEGER/FLOAT --stop=INTEGER
+		--gap=INTEGER/FLOAT --threads=INTEGER --debug --version --help --manual]
 
-Mapping to a denovo reference:
-redrep-qc.pl -> redrep-cluster.pl -> redrep-refmap.pl -> redrep-SNPcall.pl
+Note: When using a de novo reference created by rederp-cluster for mapping, GATK used by redrep-SNPcall.pl (next step) can be extremely slow. This can be remedied by concatenating the many separate sequences into one long sequence, with each contig/centroid separated by a string of “N” characters (e.g. 40 Ns). redrep-cluster.pl does not currently perform this task, and some custom scripting is required to recover information about which SNPs were called in which centroids.
 
+Variant calling is done with redrep-SNPcall.pl which accepts as input the bam output from redrep-refmap.pl and fasta-formatted reference sequence(s) with indexes and gives as output a variant file in vcf format.
+
+	redrep-SNPcall.pl--in FILE_OR_DIR_NAME --out DIRNAME --ref=FILENAME
+		[OPTIONS --log=FILENAME --force --keep_temp --threads=INTEGER --mem=INTEGER
+		--downsample_to_coverage=INTEGER --downsample_to_fraction=FLOAT
+		--downsampling_type=[NONE ALL_READS BY_SAMPLE] --debug --version
+		--help --manual]
+
+More details on options for each utility are available using the --help or --manual flags for the utility.

@@ -16,22 +16,22 @@ redrep-refmap.pl -- De novo clustering of reduced representation libraries
 =head1 DESCRIPTION
 
 Accepts fastq output from redrep-qc.pl and fasta-formatted reference sequence(s), then maps fastq reads to fasta reference.
- 
+
 =head1 OPTIONS
 
 =over 3
 
 =item B<-1, -i, --in, --in1>=FILENAME
 
-Input file in fastq format or directory of fastq files. (Required) 
+Input file in fastq format or directory of fastq files. (Required)
 
 =item B<-o, --out>=DIRECTORY_NAME
 
-Output directory. (Required) 
+Output directory. (Required)
 
 =item B<-r, --ref>=FILENAME
 
-Reference FASTA. (Required) 
+Reference FASTA. (Required)
 
 =item B<-l, --log>=FILENAME
 
@@ -59,7 +59,7 @@ bwa '-o' option: maximum number or fraction of gap opens [1]
 
 =item B<-t, --threads, --ncpu>=integer
 
-Number of cpu's to use for threadable operations. 
+Number of cpu's to use for threadable operations.
 
 =item B<-d, --debug>
 
@@ -95,17 +95,19 @@ Displays full manual.
 
 =item 1.4 - 3/28/2014: Change bwa method from aln to mem; add version output to log; use path verisons of samtools, java, bwa; check ENV for $PICARDJARS and $REDREPBIN
 
+-item 2.0 - 11/18/2016: Version 2 of picard tools now supported.  Major Release.
+
 =back
 
 =head1 DEPENDENCIES
 
-=item bwa (tested with version 0.7.5a)
+=item bwa (tested with version 0.7.13-r1126)
 
-=item samtools (tested with version 0.1.18)
+=item samtools (tested with version 1.3.1)
 
-=item picard-tools (tested with version 1.67)
+=item picard-tools (tested with version 2.4.1)
 
-=item java (tested with version "1.7.0_25"; OpenJDK Runtime Environment (fedora-2.3.12.1.fc17-x86_64); OpenJDK 64-Bit Server VM (build 23.7-b01, mixed mode))
+=item java (tested with version 1.8.0_111-b16 OpenJDK Runtime Environment)
 
 =head2 Requires the following Perl libraries:
 
@@ -127,7 +129,7 @@ Displays full manual.
 
 =over 3
 
-=item 
+=item
 
 =back
 
@@ -141,12 +143,12 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2014 Shawn Polson, Randall Wisser, Keith Hopper.  
-License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.  
-This is free software: you are free to change and redistribute it.  
-There is NO WARRANTY, to the extent permitted by law.  
+Copyright 2012-2016 Shawn Polson, Randall Wisser, Keith Hopper.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
 
-Please acknowledge author and affiliation in published work arising from this script's 
+Please acknowledge author and affiliation in published work arising from this script's
 usage <http://bioinformatics.udel.edu/Core/Acknowledge>.
 
 =cut
@@ -189,9 +191,9 @@ GetOptions (	"i|in=s"					=>	\$in,
 				"f|force"					=>	\$force,
 				"d|debug"					=>	\$debug,
 				"k|keep_temp"				=>	\$keep,
-								
+
 				"t|threads|ncpu=i"			=>	\$ncpu,
-				
+
 				"v|ver|version"				=>	\$version,
 				"h|help"					=>	\$help,
 				"m|man|manual"				=>	\$manual);
@@ -200,7 +202,7 @@ GetOptions (	"i|in=s"					=>	\$in,
 ### VALIDATE ARGS
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
-my $ver="redrep-refmap.pl Ver. 1.4 (rev 28 Mar 2014)";
+my $ver="redrep-refmap.pl Ver. 2.0 (11/18/2016 rev)";
 die "\n$ver\n\n" if ($version);
 pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) missing.\n", -exitval => 2) if (! $in);
 pod2usage( -msg  => "ERROR!  Required argument -r (reference fasta) missing.\n", -exitval => 2) if (! $refFasta);
@@ -264,8 +266,8 @@ $path{'bwa'}=`which $bwa`;
 my $samtools="samtools";
 $ver{'samtools'}=`$samtools 2>&1|grep Version`;
 $path{'samtools'}=`which $samtools`;
-my $picard = $ENV{'PICARDJARS'};
-$ver{'picard'}=`$java $picard/ViewSam.jar --version 2>&1`;
+my $picard = $ENV{'PICARDJARS'}."/picard.jar";
+$ver{'picard'}=`$java $picard AddCommentsToBam --version 2>&1`;
 chomp %ver;
 chomp %path;
 
@@ -302,21 +304,21 @@ foreach my $inFile(@files)
 	my $bwa_bam="$intermed/$stub.bam";
 	my $rg_bam="$intermed/$stub.rg.bam";
 	my $sort_bam="$outDir/$stub.rg.sort.bam";
-	
+
 	if(! -e $refFasta.".fai")
 	{	logentry("REFERENCE FASTA INDEX NOT FOUND: BUILDING");
 		$sys=cmd("$samtools faidx $refFasta","Building reference index");
 	}
 	if(! -e "$refPath/$stub2.dict")
 	{	logentry("REFERENCE DICTIONARY NOT FOUND: BUILDING");
-		$sys=cmd("$java /usr/local/picard-tools-1.67/CreateSequenceDictionary.jar R=$refFasta O=$refPath/$stub2.dict","Building reference dictionary");
-	}	
-	
+		$sys=cmd("$java $picard CreateSequenceDictionary R=$refFasta O=$refPath/$stub2.dict","Building reference dictionary");
+	}
+
 	if(! -e $refFasta.".amb" || ! -e $refFasta.".ann" || ! -e $refFasta.".bwt" || ! -e $refFasta.".pac" || ! -e $refFasta.".sa")
 	{	logentry("REFERENCE FASTA BWT INDEXES NOT FOUND: BUILDING");
 		$sys=cmd("$bwa index $refFasta","Build reference BWT indexes");
 	}
-		
+
 	logentry("REFERENCE MAPPING");
 #	$sys=cmd("$bwa aln -t $ncpu -n $diff -R $stop -o $gap -f $bwa_out $refFasta $inFile","BWA Reference Mapping");
 	$sys=cmd2("$bwa mem -t $ncpu $refFasta $inFile 1> $bwa_out ","BWA Reference Mapping");
@@ -326,22 +328,22 @@ foreach my $inFile(@files)
 	$sys=cmd("cat $bwa_out | $samtools view -bS -F 4 - -o $bwa_bam","Convert BWA to BAM");
 
 	logentry("ADD READ GROUPS TO ALIGNMENT BAM");
-	$sys=cmd("$java $picard/AddOrReplaceReadGroups.jar I=$bwa_bam O=$rg_bam SORT_ORDER=coordinate RGID=$stub RGLB=$stub RGPL=illumina RGPU=$stub RGSM=$stub VALIDATION_STRINGENCY=LENIENT MAX_RECORDS_IN_RAM=500000","Add read groups to BAM");
-	
+	$sys=cmd("$java $picard AddOrReplaceReadGroups I=$bwa_bam O=$rg_bam SORT_ORDER=coordinate RGID=$stub RGLB=$stub RGPL=illumina RGPU=$stub RGSM=$stub VALIDATION_STRINGENCY=LENIENT MAX_RECORDS_IN_RAM=500000","Add read groups to BAM");
+
 	logentry("SORT ALIGNMENT BAM FILE");
-	$sys=cmd("$java $picard/ReorderSam.jar I=$rg_bam O=$sort_bam REFERENCE=$refFasta","Sorting BAM file");
-	
+	$sys=cmd("$java $picard ReorderSam I=$rg_bam O=$sort_bam REFERENCE=$refFasta","Sorting BAM file");
+
 	logentry("BUILDING BAM INDEX");
 	$sys=cmd("$samtools index $sort_bam","Building BAM index");
 }
-	
+
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP");
 	if(! $keep || ! $debug)
 	{	$sys=cmd("rm -R $intermed","Remove intermediate file directory");
 	}
-	
-	
+
+
 
 logentry("SCRIPT COMPLETE");
 close($LOG);
@@ -361,7 +363,7 @@ sub binClass
 {	my $number=shift;
 	my $size=shift;
 	my $start=shift;
-	
+
 	my $bottom=$start+($number*$size);
 	my $top=($start+(($number+1)*$size))-1;
 	return $bottom."-".$top;
@@ -376,9 +378,9 @@ sub binClass
 sub cmd
 {	my $cmd=shift;
 	my $message=shift;
-	
+
 	logentry("System call: $cmd") if($debug);
-	
+
 	my $sys=`$cmd 2>&1`;
 	my $err=$?;
 	if ($err)
@@ -398,9 +400,9 @@ sub cmd
 sub cmd2
 {	my $cmd=shift;
 	my $message=shift;
-	
+
 	logentry("System call: $cmd") if($debug);
-	
+
 	my $sys=`$cmd 2> err`;
 	my $err=$?;
 	if ($err)
@@ -428,4 +430,3 @@ sub logentry
 
 
 __END__
-

@@ -15,18 +15,18 @@ redrep-cluster.pl -- De novo clustering of reduced representation libraries
 =head1 DESCRIPTION
 
 Accepts fastq output from redrep-qc.pl and performs clustering of reduced representaiton tags without a priori reference.
- 
+
 =head1 OPTIONS
 
 =over 3
 
 =item B<-1, -i, --in, --in1>=FILENAME
 
-Input file (single file or first read) in fastq format. (Required) 
+Input file (single file or first read) in fastq format. (Required)
 
 =item B<-o, --out>=DIRECTORY_NAME
 
-Output directory. (Required) 
+Output directory. (Required)
 
 =item B<-l, --log>=FILENAME
 
@@ -123,12 +123,15 @@ Displays full manual.
 
 =item 1.3 - 11/3/2015: Add minsize (minimum cluster size) option
 
+=item 2.0 = 11/21/2016: Remove size attribute from centroid fasta files -- avoids GATK issue.  Major version release.
 
 =back
 
 =head1 DEPENDENCIES
 
-=item usearch (tested with version usearch_i86linux32 v6.0.307)
+=item usearch (tested with version usearch_i86linux32 5.2.32; must be accessible in the system PATH as "usearch5"))
+
+=item usearch (tested with version usearch_i86linux32 8.1.1691; must be accessible in the system PATH as "usearch8"))
 
 =head2 Requires the following Perl libraries:
 
@@ -152,7 +155,7 @@ Displays full manual.
 
 =over 3
 
-=item 
+=item
 
 =back
 
@@ -166,12 +169,12 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2014 Shawn Polson, Randall Wisser, Keith Hopper.  
-License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.  
-This is free software: you are free to change and redistribute it.  
-There is NO WARRANTY, to the extent permitted by law.  
+Copyright 2012-2016 Shawn Polson, Randall Wisser, Keith Hopper.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
 
-Please acknowledge author and affiliation in published work arising from this script's 
+Please acknowledge author and affiliation in published work arising from this script's
 usage <http://bioinformatics.udel.edu/Core/Acknowledge>.
 
 =cut
@@ -213,7 +216,7 @@ my $lenBinEnd	=	999;		# hard-coded max
 
 
 
-GetOptions (	
+GetOptions (
 				"1|i|in|in1=s"				=>	\$inFile,
 				"2|in2=s"					=>	\$inFile2,
 				"o|out=s"					=>	\$outDir,
@@ -229,7 +232,7 @@ GetOptions (
 				"n|minlen=i"				=>	\$minlen,
 				"q|minqual=f"				=>	\$minqual,
 				"minsize=i"				=>	\$minsize,
-				
+
 				"hist_stats"				=>	\$hist_stats,
 				"size_bin_start=i"			=>	\$sizeBinStart,
 				"size_bin_num=i"			=>	\$sizeBinNum,
@@ -237,9 +240,9 @@ GetOptions (
 				"len_bin_start=i"			=>	\$sizeBinStart,
 				"len_bin_num=i"				=>	\$lenBinNum,
 				"len_bin_width=i"			=>	\$lenBinSize,
-								
+
 				"t|threads|ncpu=i"			=>	\$ncpu,
-				
+
 				"v|ver|version"				=>	\$version,
 				"h|help"					=>	\$help,
 				"m|man|manual"				=>	\$manual);
@@ -248,7 +251,7 @@ GetOptions (
 ### VALIDATE ARGS
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
-my $ver="redrep-cluster.pl Ver. 1.3 (11/3/2015 rev)";
+my $ver="redrep-cluster.pl Ver. 2.0 (11/21/2016 rev)";
 die "\n$ver\n\n" if ($version);
 pod2usage( -msg  => "ERROR!  Required argument -i (input file 1) not found.\n", -exitval => 2) if (! $inFile);
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) not found.\n", -exitval => 2)  if (! $outDir);
@@ -293,17 +296,18 @@ mkdir($outDir."/intermed");
 my %ver;
 my %path;
 my $execDir=$ENV{'REDREPBIN'};
-my $sort_fastq_sh="$execDir/utilities/sort-fastq.sh";
-my $fastq2fasta_pl="$execDir/utilities/fastq2fasta.pl";
-my $fasta_abbrev_pl="$execDir/utilities/fasta-abbrev.pl";
-my $usearch5="usearch5";
-my $usearch8="usearch8";
+my $sort_fastq_sh="$execDir/sort-fastq.sh";
+my $fastq2fasta_pl="$execDir/fastq2fasta.pl";
+my $fasta_abbrev_pl="$execDir/fasta-abbrev.pl";
+my $usearch5="$execDir/usearch5";
+#my $usearch6="$execDir/usearch6";
+my $usearch8="$execDir/usearch8";
 $ver{'usearch'}=`$usearch8 --version 2>&1`;
 $path{'usearch'}=$usearch8;
-my $clstr_sort_by_pl="clstr_sort_by.pl";
-my $clstr_sort_prot_by_pl="clstr_sort_prot_by.pl";
-my $plot_len1_pl="plot_len1.pl";
-my $CDHitClustComp_pl="$execDir/utilities/CDHitClustComp.pl";
+my $clstr_sort_by_pl="$execDir/clstr_sort_by.pl";
+my $clstr_sort_prot_by_pl="$execDir/clstr_sort_prot_by.pl";
+my $plot_len1_pl="$execDir/plot_len1.pl";
+my $CDHitClustComp_pl="$execDir/CDHitClustComp.pl";
 chomp %ver;
 chomp %path;
 
@@ -334,6 +338,8 @@ my $fasta_sorted_abbrev="$intermed/$stub.sort.abbrev.fasta";
 my $splitDir="$intermed/split";
 my $uc_centroid="$intermed/$stub.uc.centroid.fasta";
 my $uc_centroid_filter="$intermed/$stub.uc.centroid.filter.fasta";
+my $uc_centroid_ren="$intermed/$stub.uc.centroid.fasta";
+my $uc_centroid_filter_ren="$intermed/$stub.uc.centroid.filter.fasta";
 my $uc_consensus="$intermed/$stub.uc.consensus.fasta";
 my $uc_seeds="$intermed/$stub.uc.seeds.fasta";
 my $uc_uc="$outDir/$stub.uc";
@@ -401,7 +407,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 
 	$sys=cmd("grep '^S' $uc_uc > $uc_uc_seeds","Make seeds uc file");
 	$sys=cmd("$usearch5 --uc2fasta $uc_uc_seeds --input $fasta_sorted_abbrev --output $uc_seeds","Make seeds fasta file");
-	
+
 
 	# CONVERT UC TO CLSTR
 	logentry("CONVERT UC FILE TO CLSTR FORMAT");
@@ -412,12 +418,12 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	$sys=cmd("$clstr_sort_by_pl $uc_clstr no > $uc_clstr.tmp","Sort clusters by size");
 	logentry("SORT CLUSTERS BY SEED LENGTH");
 	$sys=cmd("$clstr_sort_prot_by_pl len $uc_clstr.tmp > $uc_clstr.sort","Sort clusters by sequence length");
-	
-	
-	
+
+
+
 	if($hist_stats)
 	{
-		
+
 		# DEFINE CLUSTER SIZE BINS FOR STATS
 		my $sizeBinStr;
 		for (my $j=0;$j<$sizeBinNum; $j++)
@@ -429,7 +435,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 			my $top=$sizeBinEnd;
 			$sizeBinStr .= $bottom."-".$top;
 		}
-				
+
 		# DEFINE CLUSTER LENGTH BINS FOR STATS
 		my $lenBinStr;
 		for (my $j=0;$j<$lenBinNum; $j++)
@@ -441,7 +447,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 			my $top=$lenBinEnd;
 			$lenBinStr .= $bottom."-".$top;
 		}
-		
+
 		# RUN HISTOGRAM STATS
 		logentry("RUN HISTOGRAM (CLUSTER SIZE/LENGTH) STATS");
 		$sys=cmd("$plot_len1_pl $uc_clstr.sort \\$sizeBinStr \\$lenBinStr > $uc_hist_stats","Run Cluster Stats (Histogram)");
@@ -449,22 +455,26 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	else
 	{	logentry("SKIPPING HISTOGRAM (CLUSTER SIZE/LENGTH) STATS: --no_hist_stats flag used");
 	}
-		
+
 	# PARSE CLUSTER COUNTS
 	logentry("PARSE CLUSTER COUNTS");
 	$sys=cmd("$CDHitClustComp_pl $uc_clstr $uc_cluster_freq","Parse Cluster Counts");
-	
-	
+
+	# PRODUCE CLEAN CENTROID FILE (size= attributes removed)
+	logentry("CLEANING CENTROID OUTPUT FILES");
+	centroid_rename($uc_centroid, $uc_centroid_ren);
+	centroid_rename($uc_centroid_filter, $uc_centroid_filter_ren) if(-e $uc_centroid_filter);
+
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP");
 	$sys=cmd("mv $uc_clstr.sort $outDir","Move clstr sort file");
-	$sys=cmd("mv $uc_centroid $outDir","Move centroid fasta file");
-	$sys=cmd("mv $uc_centroid_filter $outDir","Move filtered centroid fasta file") if(-e $uc_centroid_filter);
+	$sys=cmd("mv $uc_centroid_ren $outDir","Move centroid fasta file");
+	$sys=cmd("mv $uc_centroid_filter_ren $outDir","Move filtered centroid fasta file") if(-e $uc_centroid_filter);
 	if(! $keep | !$debug)
 	{	$sys=cmd("rm -R $intermed","Remove intermediate file directory");
 	}
-	
-	
+
+
 
 logentry("SCRIPT COMPLETE");
 close($LOG);
@@ -484,24 +494,40 @@ sub binClass
 {	my $number=shift;
 	my $size=shift;
 	my $start=shift;
-	
+
 	my $bottom=$start+($number*$size);
 	my $top=($start+(($number+1)*$size))-1;
 	return $bottom."-".$top;
 }
 
 
+#######################################
+### centroid_rename
+# rename sequences in a usearch centroid file to remove ;size= attribute
+sub centroid_rename
+{  my $infile=shift;
+   my $outfile=shift;
 
+   open(CEN_IN, $infile);
+   open(CEN_OUT, "> $outfile");
 
+   while(<CEN_IN>)
+   {  s/;size=\d+;//;
+      print CEN_OUT $_;
+   }
+
+   close(CEN_IN);
+   close(CEN_OUT);
+}
 #######################################
 ### cmd
 # run system command and collect output and error states
 sub cmd
 {	my $cmd=shift;
 	my $message=shift;
-	
+
 	logentry("System call: $cmd") if($debug);
-	
+
 	my $sys=`$cmd 2>&1`;
 	my $err=$?;
 	if ($err)
@@ -526,4 +552,3 @@ sub logentry
 
 
 __END__
-

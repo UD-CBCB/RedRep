@@ -1,4 +1,8 @@
 #!/usr/bin/perl -w
+#RedRep Utility CDHitClustComp.pl
+#Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
+#ARGS inputfile-clstr outputfile-text
+
 use strict;
 
 sub promptUser;
@@ -12,8 +16,6 @@ sub promptUser;
 #																		
 #	OUTPUT: tab delimited table											
 #																		
-#	ARGUMENTS: none; (user is prompted for input/ouput file names)		
-#																		
 #	Shawn Polson, 5-2-2008
 
 my($inputFile, $outputFile, $clustSize, $line, $j, $key);
@@ -22,14 +24,12 @@ my @clustSeed;
 my %keyVals;
 my $pass=0;
 my $clustNum=-1;
-#my $delim="mge:[^:]+:[^:]+";		# aclame clusters
 my $delim='\w\w\w';					# metagenome sequences
-#my $delim="[^\-]+";					# ncbi viral genomes
 
-$inputFile = $ARGV[0]; # &promptUser("Enter CD-Hit .clstr file");
+$inputFile = $ARGV[0];
 open(DAT, $inputFile) or die "Cannot open input file $inputFile\n";
 
-$outputFile = $ARGV[1]; # &promptUser("Enter output file","$inputFile.freq");
+$outputFile = $ARGV[1];
 open(OUT, "> $outputFile") or die "Cannot open output file $outputFile\n";
 
 while(<DAT>)
@@ -39,8 +39,6 @@ while(<DAT>)
 	} 
 	
 	# READ CLUSTER COMPONENT ENTRIES
-#	if ($line =~ /^\d+\D+\d+aa.+>([^\_^\-]+)[\-\_]/)
-#	if ($line =~ /\d+[na][ta].+>(\w\w\w)/)
 	if ($line =~ /\d+[na][ta], >($delim)/)
 	{	
 		$clustComp[$clustNum]{$1}++;
@@ -77,37 +75,3 @@ for($j=0; $j<=$clustNum; $j++)
 }
 close(OUT);
 
-
-
-#----------------------------(	promptUser	)-----------------------------#
-#																		  #
-#  FUNCTION:	promptUser												  #
-#																		  #
-#  PURPOSE: Prompt the user for some type of input, and return the		  #
-#		input back to the calling program.								  #
-#																		  #
-#  ARGS:	$promptString - what you want to prompt the user with		  #
-#		$defaultValue - (optional) a default value for the prompt		  #
-#																		  #
-#-------------------------------------------------------------------------#
-
-sub promptUser 
-{
-
-	my ($promptString, $defaultValue) = @_;
-	if ($defaultValue) 
-	{	print $promptString, "[", $defaultValue, "]: ";
-	} 
-	else 
-	{	print $promptString, ": ";
-	}
-	$| = 1;				  # force a flush after our print
-	$_ = <STDIN>;		  # get the input from STDIN (presumably the keyboard)
-	chomp;
-	if (defined($defaultValue)) 
-	{	return $_ ? $_ : $defaultValue;	   # return $_ if it has a value
-	}
-	else 
-	{	return $_;
-	}
-}

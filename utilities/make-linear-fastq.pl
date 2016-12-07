@@ -1,6 +1,8 @@
-#!/usr/bin/perl -w
-#RedRep Utility make-linear-fastq.pl
+#!/usr/bin/perl
+#RedRep Utility make-linera-fastq.pl
 #Copyright 2016 Shawn Polson, Keith Hopper, Randall Wisser
+#reads from STDIN
+#outputs to STDOUT
 
 
 use strict;
@@ -10,12 +12,10 @@ while(my $line = <STDIN>){
     chomp($line);
     print $line;
     $count = ($count + 1) % 4;
-    
+
     if($count == 0){
-        print "\n"; 
+        print "\n";
     }else{
         print "\t";
     }
 }
-
-
