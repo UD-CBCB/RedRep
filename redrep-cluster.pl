@@ -87,7 +87,7 @@ Width of histogram bins for cluster seed length statistics (default=5)
 
 
 
-=item B<-t, --threads, ==ncpu>=integer
+=item B<-t, --threads, --ncpu>=integer
 
 Number of cpu's to use for threadable operations. (NOT CURRENTLY IMPLEMENTED)
 
@@ -124,6 +124,8 @@ Displays full manual.
 =item 1.3 - 11/3/2015: Add minsize (minimum cluster size) option
 
 =item 2.0 = 11/21/2016: Remove size attribute from centroid fasta files -- avoids GATK issue.  Major version release.
+
+=item 2.01 = 1/20/2017: Minor code cleanup.
 
 =back
 
@@ -251,7 +253,7 @@ GetOptions (
 ### VALIDATE ARGS
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
-my $ver="redrep-cluster.pl Ver. 2.0 (11/21/2016 rev)";
+my $ver="redrep-cluster.pl Ver. 2.01 (1/20/2017 rev)";
 die "\n$ver\n\n" if ($version);
 pod2usage( -msg  => "ERROR!  Required argument -i (input file 1) not found.\n", -exitval => 2) if (! $inFile);
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) not found.\n", -exitval => 2)  if (! $outDir);
@@ -300,7 +302,6 @@ my $sort_fastq_sh="$execDir/sort-fastq.sh";
 my $fastq2fasta_pl="$execDir/fastq2fasta.pl";
 my $fasta_abbrev_pl="$execDir/fasta-abbrev.pl";
 my $usearch5="$execDir/usearch5";
-#my $usearch6="$execDir/usearch6";
 my $usearch8="$execDir/usearch8";
 $ver{'usearch'}=`$usearch8 --version 2>&1`;
 $path{'usearch'}=$usearch8;
@@ -312,8 +313,6 @@ chomp %ver;
 chomp %path;
 
 
-
-
 ### CREATE LOG FILES
 $logOut="$outDir/log.cluster.txt" if (! $logOut);
 
@@ -322,7 +321,6 @@ print $LOG "$0 $script\n";
 print $LOG "RedRep Scripts: $execDir\n";
 print $LOG "Dependency: $path{'usearch'} ($ver{'usearch'})\n";
 logentry("SCRIPT STARTED ($ver)");
-
 
 
 ### CHECK FOR EXTERNAL DEPENDENCIES
@@ -338,8 +336,8 @@ my $fasta_sorted_abbrev="$intermed/$stub.sort.abbrev.fasta";
 my $splitDir="$intermed/split";
 my $uc_centroid="$intermed/$stub.uc.centroid.fasta";
 my $uc_centroid_filter="$intermed/$stub.uc.centroid.filter.fasta";
-my $uc_centroid_ren="$intermed/$stub.uc.centroid.fasta";
-my $uc_centroid_filter_ren="$intermed/$stub.uc.centroid.filter.fasta";
+my $uc_centroid_ren="$intermed/$stub.uc.centroid.clean.fasta";
+my $uc_centroid_filter_ren="$intermed/$stub.uc.centroid.clean.filter.fasta";
 my $uc_consensus="$intermed/$stub.uc.consensus.fasta";
 my $uc_seeds="$intermed/$stub.uc.seeds.fasta";
 my $uc_uc="$outDir/$stub.uc";
@@ -420,10 +418,8 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	$sys=cmd("$clstr_sort_prot_by_pl len $uc_clstr.tmp > $uc_clstr.sort","Sort clusters by sequence length");
 
 
-
 	if($hist_stats)
 	{
-
 		# DEFINE CLUSTER SIZE BINS FOR STATS
 		my $sizeBinStr;
 		for (my $j=0;$j<$sizeBinNum; $j++)
@@ -470,10 +466,9 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	$sys=cmd("mv $uc_clstr.sort $outDir","Move clstr sort file");
 	$sys=cmd("mv $uc_centroid_ren $outDir","Move centroid fasta file");
 	$sys=cmd("mv $uc_centroid_filter_ren $outDir","Move filtered centroid fasta file") if(-e $uc_centroid_filter);
-	if(! $keep | !$debug)
+	if(! $keep | ! $debug)
 	{	$sys=cmd("rm -R $intermed","Remove intermediate file directory");
 	}
-
 
 
 logentry("SCRIPT COMPLETE");
