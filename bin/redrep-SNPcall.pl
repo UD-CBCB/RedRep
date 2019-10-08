@@ -70,6 +70,12 @@ Passes argument of same name to GATK SNP caller.  See also -dcov, -dfrac.  GATK 
 
 Type of reads downsampling to employ at a given locus. Reads will be selected randomly to be removed from the pile based on the method described here.
 
+=item B<-L, --intervals>=string
+
+Passes argument of same name to GATK SNP caller.  May consist of one or more ranges separated by a comma. (EXAMPLE: -L chr1:1-100,chr2:34-500,chr3).  GATK description:
+
+Use this option to perform the analysis over only part of the genome. You can use samtools-style intervals either explicitly on the command line (e.g. -L chr1 or -L chr1:100-200) or by loading in a file containing a list of intervals (e.g. -L myFile.intervals). Additionally, you can also specify a ROD file (such as a VCF file) in order to perform the analysis at specific positions based on the records present in the file (e.g. -L file.vcf). Finally, you can also use this to perform the analysis on the reads that are completely unmapped in the BAM file (i.e. those without a reference contig) by specifying -L unmapped.
+
 =item B<-d, --debug>
 
 Produce detailed log.
@@ -106,31 +112,49 @@ Displays full manual.
 
 =item 2.0 - 11/18/2016: added support for Picard Tools version 2.  Major Release.
 
+=item 2.01 - 12/13/2016: added GATK -L parameter pass through
+
+=item 2.1 - 1/26/2017: added GATK haplotyper w/ ERC GVCF support, g.vcf workflow, RedRep::Utils library support, code cleanup
+
 =back
 
 =head1 DEPENDENCIES
 
-=item samtools (tested with version 1.3.1)
+=head2 Requires the following Perl Modules:
 
-=item GATK (tested with version 3.5-0)
+=head3 Non-Core (Not installed by default in some installations of Perl)
 
-=item java (tested with version 1.8.0_111-b16 OpenJDK Runtime Environment)
+=over 3
 
-=item picard-tools (tested with version 2.4.1)
+=item File::Which
 
-=head2 Requires the following Perl libraries:
+=item Parallel::ForkManager
+
+=back
+
+=head3 Core Modules (Installed by default in most Perl installations)
 
 =over 3
 
 =item strict
 
-=item Getopt::Long
+=item Cwd
+
+=item Exporter
 
 =item File::Basename
+
+=item File::Copy
+
+=item File::Path
+
+=item Getopt::Long
 
 =item Pod::Usage
 
 =item POSIX
+
+=item Sys::Hostname
 
 =back
 
@@ -138,7 +162,19 @@ Displays full manual.
 
 =over 3
 
-=item
+=item samtools (tested with version 1.4.1)
+
+=item java (tested with version 1.8.0_151-b12 OpenJDK Runtime Environment)
+
+=back
+
+=head2 Requires the following external programs be installed in the locations defined by environment variables
+
+=over 3
+
+=item GATK (tested with version 3.8-0); Location defined by `env GATKJARS`
+
+=item picard-tools (tested with version 2.19.0 SNAPSHOT); Location defined by `env PICARDJAR`
 
 =back
 
@@ -152,12 +188,12 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2016 Shawn Polson, Randall Wisser, Keith Hopper.
+Copyright 2012-2017 Shawn Polson, Randall Wisser, Keith Hopper.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
 
-Please acknowledge author and affiliation in published work arising from this script's
+Please acknowledge authors and affiliation in published work arising from this script's
 usage <http://bioinformatics.udel.edu/Core/Acknowledge>.
 
 =cut
@@ -166,50 +202,57 @@ my $script=join(' ',@ARGV);
 
 use strict;
 use Getopt::Long;
-use File::Basename;
 use Pod::Usage;
-use POSIX;
+use File::Basename qw(fileparse);
+use File::Copy qw(copy move);
+use File::Path qw(make_path remove_tree);
+use Sys::Hostname qw(hostname);
 
-sub binClass;
-sub cmd;
-sub logentry;
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPLIB.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPLIB'} && -e $ENV{'REDREPLIB'} && -d $ENV{'REDREPLIB'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPUTIL.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPUTIL'} && -e $ENV{'REDREPUTIL'} && -d $ENV{'REDREPUTIL'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
+
+use lib $ENV{'REDREPLIB'};
+use RedRep::Utils qw(check_dependency check_jar cmd find_job_info get_execDir logentry logentry_then_die);
 
 
 ### ARGUMENTS WITH NO DEFAULT
-my($in,$outDir,$help,$manual,$force,$metaFile,$keep,$debug,$version,$diff,$refFasta,$dcov,$dfrac,$dt);
-
+my($in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$refFasta,$dcov,$dfrac,$dt,$intervals,$javaarg,$gatkarg);
+our($debug);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
 my $ncpu		=	1;
-my $mem=50;
+my $mem			= 50;						#in GB
 
+GetOptions (	"i|in=s"										=>	\$in,
+				"o|out=s"													=>	\$outDir,
+				"r|ref=s"													=>	\$refFasta,
+				"l|log=s"													=>	\$logOut,
 
-GetOptions (	"i|in=s"							=>	\$in,
-				"o|out=s"							=>	\$outDir,
-				"r|ref=s"							=>	\$refFasta,
-				"l|log=s"							=>	\$logOut,
+				"t|threads|ncpu=i"								=>	\$ncpu,
+				"mem=i"														=>	\$mem,
 
-				"f|force"							=>	\$force,
-				"d|debug"							=>	\$debug,
-				"k|keep_temp"						=>	\$keep,
+				"java=s"													=>	\$javaarg,
+				"gatk=s"													=>	\$gatkarg,
+				"dcov|downsample_to_coverage=i"		=>	\$dcov,
+				"dfrac|downsample_to_fraction=f"	=>	\$dfrac,
+				"dt|downsampling_type=s"					=>	\$dt,
+				"L|intervals=s"										=>	\$intervals,
 
-				"t|threads|ncpu=i"					=>	\$ncpu,
-				"mem=i"								=>	\$mem,
+				"f|force"													=>	\$force,
+				"d|debug"													=>	\$debug,
+				"k|keep|keep_temp"								=>	\$keep,
 
-				"dcov|downsample_to_coverage=i"	=> \$dcov,
-				"dfrac|downsample_to_fraction=f"	=> \$dfrac,
-				"dt|downsampling_type=s"			=> \$dt,
-
-				"v|ver|version"						=>	\$version,
-				"h|help"							=>	\$help,
-				"m|man|manual"						=>	\$manual);
+				"v|ver|version"										=>	\$version,
+				"h|help"													=>	\$help,
+				"m|man|manual"										=>	\$manual);
 
 
 ### VALIDATE ARGS
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
-my $ver="redrep-SNPcall.pl Ver. 2.0 (11/18/2016 rev)";
+my $ver="redrep-SNPcall.pl Ver. 2.2 (1/26/2017 rev)";
 die "\n$ver\n\n" if ($version);
 pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) missing.\n", -exitval => 2) if (! $in);
 pod2usage( -msg  => "ERROR!  Required argument -r (reference fasta) missing.\n", -exitval => 2) if (! $refFasta);
@@ -217,6 +260,7 @@ pod2usage( -msg  => "ERROR!  Required argument -o (output directory) missing.\n"
 pod2usage( -msg  => "ERROR!  Arguments -dcov and -dfrac are incompatible, chose one.\n", -exitval => 2)  if ($dcov && $dfrac);
 
 
+### DEBUG MODE
 if($debug)
 {	require warnings; import warnings;
 	require Data::Dumper; import Data::Dumper;
@@ -224,10 +268,15 @@ if($debug)
 }
 
 
+### SET DEFAULT METHOD OF FILE PROPAGATION
+my $mv = \&move;
+if($keep)
+{	$mv = \&copy;
+}
+
+
 ### DECLARE OTHER GLOBALS
 my $sys;												# system call variable
-
-#our $manager = new Parallel::ForkManager( $ncpu );
 
 
 ### THROW ERROR IF OUTPUT DIRECTORY ALREADY EXISTS (unless $force is set)
@@ -236,7 +285,7 @@ if(-d $outDir)
 	{	pod2usage( -msg  => "ERROR!  Output directory $outDir already exists.  Use --force flag to overwrite.", -exitval => 2);
 	}
 	else
-	{	$sys=`rm -R $outDir`;
+	{	$sys=remove_tree($outDir);
 	}
 }
 
@@ -244,9 +293,11 @@ if(-d $outDir)
 ### OUTPUT FILE LOCATIONS
 my $intermed="$outDir/intermed";
 
+
 ### CREATE OUTPUT DIR
 mkdir($outDir);
 mkdir($outDir."/intermed");
+mkdir($outDir."/gvcf");
 my(@files);
 if(-d $in)
 {	opendir(DIR,$in);
@@ -262,43 +313,46 @@ else
 }
 
 
-### BIN/SCRIPT LOCATIONS
-my %ver;
-my %path;
-my $execDir=$ENV{'REDREPBIN'};
-my $java = "java -Xmx${mem}g -d64 -jar ";
-$ver{'java'}=`java -version 2>&1|grep version`;
-$path{'java'}=`which java`;
-my $picard = $ENV{'PICARDJARS'}."/picard.jar";
-$ver{'picard'}=`$java $picard AddCommentsToBam --version 2>&1`;
-my $GATK = $ENV{'GATKJAR'};
-$ver{'gatk'}=`$GATK --version 2>&1`;
-$path{'gatk'}=$GATK;
-my $samtools = "samtools";
-$ver{'samtools'}=`$samtools 2>&1|grep Version`;
-$path{'samtools'}=`which $samtools`;
-chomp %ver;
-chomp %path;
-
-
 ### CREATE LOG FILES
 $logOut="$outDir/log.SNP.txt" if (! $logOut);
-
 open(our $LOG, "> $logOut");
-print $LOG "$0 $script\n";
-print $LOG "RedRep Scripts: $execDir\n";
-print $LOG "Dependency: $path{'java'} ($ver{'java'})\n";
-print $LOG "Dependency: $path{'samtools'} ($ver{'samtools'})\n";
-print $LOG "Dependency: $path{'gatk'} ($ver{'gatk'})\n";
 logentry("SCRIPT STARTED ($ver)");
+print $LOG "Command: $0 $script\n";
+print $LOG "Executing on ".hostname."\n";
+print $LOG find_job_info()."\n";
+
+
+### REDREP BIN/SCRIPT LOCATIONS
+### REDREP BIN/SCRIPT LOCATIONS
+my $execDir=$ENV{'REDREPBIN'};
+my $utilDir=$ENV{'REDREPUTIL'};
+my $libDir=$ENV{'REDREPLIB'};
+print $LOG "RedRep Bin: $execDir\n";
+print $LOG "RedRep Utilities: $utilDir\n";
+print $LOG "RedRep Libraries: $libDir\n";
+
+
+### CHECK FOR AND SETUP EXTERNAL DEPENDENCIES
+logentry("Checking External Dependencies");
+
+	# java
+	our $java=check_dependency("java","-version","s/\r?\n/ | /g");
+	$java = "${java} -Xmx${mem}g $javaarg -d64 -jar ";
+
+	# samtools
+	my $samtools=check_dependency("samtools","--version","s/\r?\n/ | /g");
+
+	#picard
+	#picard
+	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
+	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
+
+	#GATK
+	my $GATK=check_jar("GATK",$ENV{'GATKJAR'},"--version","s/\r?\n/ | /g","Environment Variable GATKJAR is not defined or is a not pointing to a valid jar file!  Please define valid GATK jar file location with command: export GATKJAR='PATH_TO_GATK_JAR");
 
 
 ### OUTPUT FILE LOCATIONS
-my $gatk_out="$outDir/combined.SNP.vcf";
-
-### CHECK FOR EXTERNAL DEPENDENCIES
-# Not yet implemented
-
+#my $gatk_out="$outDir/combined.SNP.vcf";
 
 
 ############
@@ -317,20 +371,31 @@ my $gatk_out="$outDir/combined.SNP.vcf";
 	}
 
 	my $bam_files=join(" -I ",@files);
-#	$bam_files="-I $bam_files";
 	my $GATKargs.="-dcov $dcov " if($dcov);
 	$GATKargs.="-dfrac $dfrac " if($dfrac);
 	$GATKargs.="-dt $dt " if($dt);
-    logentry("GATK VARIANT CALLING: MULTI-SAMPLE DISCOVERY MODE");
-	system("$java $GATK -T UnifiedGenotyper -R $refFasta -I $bam_files -o $gatk_out -gt_mode DISCOVERY $GATKargs -nt $ncpu -rf BadCigar");
+	if($intervals)
+	{	my @intervals=split(/,/,$intervals);
+		foreach my $interval (@intervals)
+		{	$GATKargs.="-L $interval "
+		}
+	}
 
+	$GATKargs.="-intervals $dfrac " if($dfrac);
+	$GATKargs.="$gatkarg " if($gatkarg);
+  logentry("GATK VARIANT CALLING: ERC GVCF SINGLE-SAMPLE DISCOVERY MODE");
+
+foreach my $file (@files)
+{	my $stub=fileparse($file, qr/\.[^.]*(\.gz)?$/);
+	$sys=cmd("$java $GATK -T HaplotypeCaller -R $refFasta -ERC GVCF -I $file -o $outDir/$stub.g.vcf -gt_mode DISCOVERY $GATKargs -nct $ncpu -rf BadCigar","Run HaplotypeCaller on ${file}");
+}
 
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP");
-	if(! $keep || ! $debug)
-	{	$sys=cmd("rm -R $intermed","Remove intermediate file directory");
+	if(! $keep)
+	{	logentry("Remove intermediate file directory");
+		$sys=remove_tree($intermed);
 	}
-
 
 
 logentry("SCRIPT COMPLETE");
@@ -342,54 +407,6 @@ exit 0;
 #######################################
 ############### SUBS ##################
 
-
-#######################################
-### binClass
-# run system command and collect output and error states
-sub binClass
-
-{	my $number=shift;
-	my $size=shift;
-	my $start=shift;
-
-	my $bottom=$start+($number*$size);
-	my $top=($start+(($number+1)*$size))-1;
-	return $bottom."-".$top;
-}
-
-
-
-
-#######################################
-### cmd
-# run system command and collect output and error states
-sub cmd
-{	my $cmd=shift;
-	my $message=shift;
-
-	logentry("System call: $cmd") if($debug);
-
-	my $sys=`$cmd 2>&1`;
-	my $err=$?;
-	if ($err)
-	{	print $LOG "$message\n$cmd\nERROR $err\n$sys\n" if($LOG);
-		pod2usage( -msg  => "ERROR $err!  $message\n", -exitval => 2);
-		return 1;
-	}
-	else
-	{	print $LOG $sys;
-		return $sys;
-	}
-}
-
-
-#######################################
-### logentry
-# Enter time stamped log entry
-sub logentry
-{	my $message=shift;
-	print $LOG POSIX::strftime("%m/%d/%Y %H:%M:%S > $message\n", localtime);
-}
 
 
 

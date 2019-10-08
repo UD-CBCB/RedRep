@@ -45,6 +45,10 @@ If output directory exists, force overwrite of previous directory contents.
 
 Retain temporary intermediate files.
 
+=item B<-p, --pe>
+
+bwa '-p' option: indicates paired end sequence files
+
 =item B<-n, --ndiff>
 
 bwa '-n' option: max #diff (int) or missing prob under 0.02 err rate (float) [0.04]
@@ -56,6 +60,10 @@ bwa '-R' option: stop searching when there are >INT equally best hits [100]
 =item B<-g, --gap>
 
 bwa '-o' option: maximum number or fraction of gap opens [1]
+
+=item B<--mem>=integer
+
+Max RAM usage for GATK/Picard Java Virtual Machine in GB (default 2)
 
 =item B<-t, --threads, --ncpu>=integer
 
@@ -95,33 +103,47 @@ Displays full manual.
 
 =item 1.4 - 3/28/2014: Change bwa method from aln to mem; add version output to log; use path verisons of samtools, java, bwa; check ENV for $PICARDJARS and $REDREPBIN
 
--item 2.0 - 11/18/2016: Version 2 of picard tools now supported.  Major Release.
+=item 2.0 - 11/18/2016: Version 2 of picard tools now supported.  Major Release.
+
+=item 2.1 - 2/2/2017: Code cleanup including minimizing OS dependencies
 
 =back
 
 =head1 DEPENDENCIES
 
-=item bwa (tested with version 0.7.13-r1126)
+=head2 Requires the following Perl Modules:
 
-=item samtools (tested with version 1.3.1)
+=head3 Non-Core (Not installed by default in some installations of Perl)
 
-=item picard-tools (tested with version 2.4.1)
+=over 3
 
-=item java (tested with version 1.8.0_111-b16 OpenJDK Runtime Environment)
+=item File::Which
 
-=head2 Requires the following Perl libraries:
+=item Parallel::ForkManager
+
+=back
+
+=head3 Core Modules (Installed by default in most Perl installations)
 
 =over 3
 
 =item strict
 
-=item Getopt::Long
+=item Exporter
 
 =item File::Basename
+
+=item File::Copy
+
+=item File::Path
+
+=item Getopt::Long
 
 =item Pod::Usage
 
 =item POSIX
+
+=item Sys::Hostname
 
 =back
 
@@ -129,7 +151,13 @@ Displays full manual.
 
 =over 3
 
-=item
+=item bwa (tested with version 0.7.16a r-1181)
+
+=item samtools (tested with version 1.4.1)
+
+=item picard-tools (tested with version 2.19.0 SNAPSHOT)
+
+=item java (tested with version 1.8.0_151-b12 OpenJDK Runtime Environment)
 
 =back
 
@@ -155,20 +183,26 @@ usage <http://bioinformatics.udel.edu/Core/Acknowledge>.
 
 my $script=join(' ',@ARGV);
 
+# standard libs
 use strict;
 use Getopt::Long;
-use File::Basename;
+use File::Basename qw(fileparse);
+use File::Copy qw(copy move);
+use File::Path qw(make_path remove_tree);
 use Pod::Usage;
-use POSIX;
+use Sys::Hostname qw(hostname);
 
-sub binClass;
-sub cmd;
-sub logentry;
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPLIB.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPLIB'} && -e $ENV{'REDREPLIB'} && -d $ENV{'REDREPLIB'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPUTIL.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPUTIL'} && -e $ENV{'REDREPUTIL'} && -d $ENV{'REDREPUTIL'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
+
+use lib $ENV{'REDREPLIB'};
+use RedRep::Utils qw(check_dependency check_jar cmd cmd_STDOUT find_job_info get_execDir logentry logentry_then_die);
 
 
 ### ARGUMENTS WITH NO DEFAULT
-my($in,$outDir,$help,$manual,$force,$metaFile,$keep,$debug,$version,$diff,$refFasta);
-
+my($in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$diff,$refFasta,$pe,$javaarg);
+our($debug);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -176,7 +210,7 @@ my $ncpu		=	1;
 my $diff=0.04;
 my $stop=100;
 my $gap=1;
-
+my $mem=2;						#in GB
 
 
 GetOptions (	"i|in=s"					=>	\$in,
@@ -184,15 +218,19 @@ GetOptions (	"i|in=s"					=>	\$in,
 				"r|ref=s"					=>	\$refFasta,
 				"l|log=s"					=>	\$logOut,
 
+				"p|pe"						=>	\$pe,
 				"n|ndiff=s"					=>	\$diff,
 				"s|stop=i"					=>	\$stop,
 				"g|gap=s"					=>	\$gap,
+
+				"java=s"													=>	\$javaarg,
 
 				"f|force"					=>	\$force,
 				"d|debug"					=>	\$debug,
 				"k|keep_temp"				=>	\$keep,
 
 				"t|threads|ncpu=i"			=>	\$ncpu,
+				"mem=i"									=>	\$mem,
 
 				"v|ver|version"				=>	\$version,
 				"h|help"					=>	\$help,
@@ -202,17 +240,23 @@ GetOptions (	"i|in=s"					=>	\$in,
 ### VALIDATE ARGS
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
-my $ver="redrep-refmap.pl Ver. 2.0 (11/18/2016 rev)";
+my $ver="redrep-refmap.pl Ver. 2.1 (2/1/2017 rev)";
 die "\n$ver\n\n" if ($version);
 pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) missing.\n", -exitval => 2) if (! $in);
 pod2usage( -msg  => "ERROR!  Required argument -r (reference fasta) missing.\n", -exitval => 2) if (! $refFasta);
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) missing.\n", -exitval => 2)  if (! $outDir);
-#pod2usage( -msg  => "ERROR!  Required argument -m (metadata file) not found.\n", -exitval => 2)  if (! $metaFile);
 
 if($debug)
 {	require warnings; import warnings;
 	require Data::Dumper; import Data::Dumper;
 	$keep=1;
+}
+
+
+### SET DEFAULT METHOD OF FILE PROPAGATION
+my $mv = \&move;
+if($keep)
+{	$mv = \&copy;
 }
 
 
@@ -227,13 +271,14 @@ if(-d $outDir)
 	{	pod2usage( -msg  => "ERROR!  Output directory $outDir already exists.  Use --force flag to overwrite.", -exitval => 2);
 	}
 	else
-	{	$sys=`rm -R $outDir`;
+	{	$sys=remove_tree($outDir);
 	}
 }
 
 
 ### OUTPUT FILE LOCATIONS
 my $intermed="$outDir/intermed";
+
 
 ### CREATE OUTPUT DIR
 mkdir($outDir);
@@ -244,6 +289,7 @@ if(-d $in)
 	@files=grep /\.fastq$/, readdir(DIR);
 	close(DIR);
 	s/^/$in\// for @files;  #prepend $in (dirpath) to each element
+
 }
 elsif (-f $in)
 {	push(@files,$in);
@@ -253,40 +299,40 @@ else
 }
 
 
-### BIN/SCRIPT LOCATIONS
-my %ver;
-my %path;
-my $execDir=$ENV{'REDREPBIN'};
-my $java = "java -Xmx2g -d64 -jar ";
-$ver{'java'}=`java -version 2>&1|grep version`;
-$path{'java'}=`which java`;
-my $bwa="bwa";
-$ver{'bwa'}=`$bwa 2>&1|grep Version`;
-$path{'bwa'}=`which $bwa`;
-my $samtools="samtools";
-$ver{'samtools'}=`$samtools 2>&1|grep Version`;
-$path{'samtools'}=`which $samtools`;
-my $picard = $ENV{'PICARDJARS'}."/picard.jar";
-$ver{'picard'}=`$java $picard AddCommentsToBam --version 2>&1`;
-chomp %ver;
-chomp %path;
-
-
 ### CREATE LOG FILES
 $logOut="$outDir/log.map.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
-print $LOG "$0 $script\n";
-print $LOG "RedRep Scripts: $execDir\n";
-print $LOG "Dependency: $path{'java'} ($ver{'java'})\n";
-print $LOG "Dependency: $path{'bwa'} ($ver{'bwa'})\n";
-print $LOG "Dependency: $path{'samtools'} ($ver{'samtools'})\n";
-print $LOG "Dependency: $picard ($ver{'picard'})\n";
 logentry("SCRIPT STARTED ($ver)");
+print $LOG "Command: $0 $script\n";
+print $LOG "Executing on ".hostname."\n";
+print $LOG find_job_info()."\n";
 
 
-### CHECK FOR EXTERNAL DEPENDENCIES
-# Not yet implemented
+### REDREP BIN/SCRIPT LOCATIONS
+my $execDir=$ENV{'REDREPBIN'};
+my $utilDir=$ENV{'REDREPUTIL'};
+my $libDir=$ENV{'REDREPLIB'};
+print $LOG "RedRep Bin: $execDir\n";
+print $LOG "RedRep Utilities: $utilDir\n";
+print $LOG "RedRep Libraries: $libDir\n";
 
+
+### CHECK FOR AND SETUP EXTERNAL DEPENDENCIES
+logentry("Checking External Dependencies");
+
+	# java
+	our $java=check_dependency("java","-version","s/\r?\n/ | /g");
+	$java = "${java} -Xmx${mem}g $javaarg -d64 -jar ";
+
+	# bwa
+	my $bwa=check_dependency("bwa",' 2>&1 |grep "Version"',"s/\r?\n/ | /g");
+
+	# samtools
+	my $samtools=check_dependency("samtools","--version","s/\r?\n/ | /g");
+
+	#picard
+	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
+	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
 
 
 ############
@@ -320,11 +366,11 @@ foreach my $inFile(@files)
 	}
 
 	logentry("REFERENCE MAPPING");
-#	$sys=cmd("$bwa aln -t $ncpu -n $diff -R $stop -o $gap -f $bwa_out $refFasta $inFile","BWA Reference Mapping");
-	$sys=cmd2("$bwa mem -t $ncpu $refFasta $inFile 1> $bwa_out ","BWA Reference Mapping");
+	my $flags="";
+	$flags="-p" if($pe);
+	$sys=cmd_STDOUT("$bwa mem $flags -t $ncpu $refFasta $inFile 1> $bwa_out ","BWA Reference Mapping");
 
 	logentry("MAKE BAM FILE");
-#	$sys=cmd("$bwa samse $refFasta $bwa_out $inFile | $samtools view -bS -F 4 - -o $bwa_bam","Convert BWA to BAM");
 	$sys=cmd("cat $bwa_out | $samtools view -bS -F 4 - -o $bwa_bam","Convert BWA to BAM");
 
 	logentry("ADD READ GROUPS TO ALIGNMENT BAM");
@@ -340,7 +386,7 @@ foreach my $inFile(@files)
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP");
 	if(! $keep || ! $debug)
-	{	$sys=cmd("rm -R $intermed","Remove intermediate file directory");
+	{	$sys=remove_tree($intermed);
 	}
 
 
@@ -353,79 +399,6 @@ exit 0;
 
 #######################################
 ############### SUBS ##################
-
-
-#######################################
-### binClass
-# run system command and collect output and error states
-sub binClass
-
-{	my $number=shift;
-	my $size=shift;
-	my $start=shift;
-
-	my $bottom=$start+($number*$size);
-	my $top=($start+(($number+1)*$size))-1;
-	return $bottom."-".$top;
-}
-
-
-
-
-#######################################
-### cmd
-# run system command and collect output and error states
-sub cmd
-{	my $cmd=shift;
-	my $message=shift;
-
-	logentry("System call: $cmd") if($debug);
-
-	my $sys=`$cmd 2>&1`;
-	my $err=$?;
-	if ($err)
-	{	print $LOG "$message\n$cmd\nERROR $err\n$sys\n" if($LOG);
-		pod2usage( -msg  => "ERROR $err!  $message\n", -exitval => 2);
-		return 1;
-	}
-	else
-	{	print $LOG $sys;
-		return $sys;
-	}
-}
-
-#######################################
-### cmd2
-# run system command and collect output and error states (when std out must be used separately)
-sub cmd2
-{	my $cmd=shift;
-	my $message=shift;
-
-	logentry("System call: $cmd") if($debug);
-
-	my $sys=`$cmd 2> err`;
-	my $err=$?;
-	if ($err)
-	{	$sys=`cat err`;
-		print $LOG "$message\n$cmd\nERROR $err\n$sys\n" if($LOG);
-		pod2usage( -msg  => "ERROR $err!  $message\n", -exitval => 2);
-		return 1;
-	}
-	else
-	{	print $LOG $sys;
-		return $sys;
-	}
-	$sys=`rm err`;
-}
-
-
-#######################################
-### logentry
-# Enter time stamped log entry
-sub logentry
-{	my $message=shift;
-	print $LOG POSIX::strftime("%m/%d/%Y %H:%M:%S > $message\n", localtime);
-}
 
 
 

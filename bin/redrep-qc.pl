@@ -156,17 +156,31 @@ Displays full manual.
 
 =item 2.0 - 11/21/2016: additional variable length barcode functionality.  Major version release.
 
+=item 2.1 - 2/1/2017: Code cleanup.
+
 =back
 
 =head1 DEPENDENCIES
 
-=head2 Requires the following Perl libraries:
+=head2 Requires the following Perl Modules:
+
+=head3 Non-Core (Not installed by default in some installations of Perl)
+
+=over 3
+
+=item File::Which
+
+=item Parallel::ForkManager
+
+=back
+
+=head3 Core Modules (Installed by default in most Perl installations)
 
 =over 3
 
 =item strict
 
-=item Getopt::Long
+=item Exporter
 
 =item File::Basename
 
@@ -174,15 +188,13 @@ Displays full manual.
 
 =item File::Path
 
-=item Pod::Usage
+=item Getopt::Long
 
-=item File::Basename
+=item Pod::Usage
 
 =item POSIX
 
-=item Parallel::ForkManager
-
-=item
+=item Sys::Hostname
 
 =back
 
@@ -192,7 +204,7 @@ Displays full manual.
 
 =item fastqc v0.11.5
 
-=item cutadapt v1.9.1
+=item cutadapt v1.14
 
 =item fastx_barcode_splitter.pl v0.0.13
 
@@ -208,7 +220,7 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2016 Shawn Polson, Randall Wisser, Keith Hopper.
+Copyright 2012-2017 Shawn Polson, Randall Wisser, Keith Hopper.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
@@ -224,84 +236,77 @@ use strict;
 use Getopt::Long;
 use Parallel::ForkManager;
 use Pod::Usage;
-
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
 use File::Path qw(make_path remove_tree);
-## Need to add
-#use File::Which qw(which);
-use POSIX qw(strftime);
+use Sys::Hostname qw(hostname);
 
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPLIB.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPLIB'} && -e $ENV{'REDREPLIB'} && -d $ENV{'REDREPLIB'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPUTIL.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPUTIL'} && -e $ENV{'REDREPUTIL'} && -d $ENV{'REDREPUTIL'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
 
-sub avgQual;
+use lib $ENV{'REDREPLIB'};
+use RedRep::Utils qw(avgQual check_dependency cmd concat countFastq find_job_info get_execDir IUPAC2regexp IUPAC_RC logentry logentry_then_die);
+
 sub BC_File;
 sub BCStats;
-sub cmd;
-sub concat;
-sub countFastq;
 sub fastq_pair_repair;
 sub filter;
-sub logentry;
-sub IUPAC2regexp;
-sub IUPAC_RC;
-sub round;
-
 
 ### ARGUMENTS WITH NO DEFAULT
 my($inFile,$inFile2,$outDir,$help,$manual,$force,$sepQC,$no_preQC,$no_postQC,$metaFile,$debug,$version,$int_rs_keep,$miss_hang_keep);
-our($intermed);
+our($keep,$debug);
 
 ### ARGUMENTS WITH DEFAULT
 my $fpAdapt		=	"AATGATACGGCGACCACCGAGATCTACACTCTTTCCCTACACGACGCTCTTCCGATC";
 my $tpAdapt		=	"GATCGGAAGAGCACACGTCTGAACTCCAGTCAC";
-my $logOut;									# default post-processed
-my $statsOut;								# default post-processed
+my $logOut;										# default post-processed
+my $statsOut;									# default post-processed
 our $maxLen		=	9999999;
 our $minLen		=	35;
-my $qual		=	30;
-our $maxN		=	2;
-my $part		=	1;						#  Partial alignment max for BC deconv
+my $qual			=	30;
+our $maxN			=	2;
+my $part			=	1;						#  Partial alignment max for BC deconv
 my $mismatch	=	1;
-my $ncpu		=	1;
-
+my $ncpu			=	1;
 
 GetOptions (
-				"1|i|in|in1=s"				=>	\$inFile,
-				"2|in2=s"					=>	\$inFile2,
-				"o|out=s"					=>	\$outDir,
+				"1|i|in|in1=s"			=>	\$inFile,
+				"2|in2=s"						=>	\$inFile2,
+				"o|out=s"						=>	\$outDir,
 				"c|meta=s"					=>	\$metaFile,
-				"l|log=s"					=>	\$logOut,
+				"l|log=s"						=>	\$logOut,
 				"s|stats=s"					=>	\$statsOut,
 
-				"f|force"					=>	\$force,
-				"d|debug"					=>	\$debug,
-				"k|keep_temp"				=>	\$intermed,
+				"f|force"						=>	\$force,
+				"d|debug"						=>	\$debug,
+				"k|keep|keep_temp"	=>	\$keep,
 				"a|no_pre_qc"				=>	\$no_preQC,
-				"z|no_post_qc"				=>	\$no_postQC,
+				"z|no_post_qc"			=>	\$no_postQC,
 
-				"b|per_barcode_qc"			=>	\$sepQC,
+				"b|per_barcode_qc"	=>	\$sepQC,
 
-				"5|5p_adapt=s"				=>	\$fpAdapt,    	# 5' sequencing adapter
-				"3|3p_adapt=s"				=>	\$tpAdapt,		# 3' sequencing adapter
+				"5|5p_adapt=s"			=>	\$fpAdapt,    			# 5' sequencing adapter
+				"3|3p_adapt=s"			=>	\$tpAdapt,					# 3' sequencing adapter
 
 				"x|maxLen=i"				=>	\$maxLen,
 				"w|minLen=i"				=>	\$minLen,
-				"n|max_N_run=i"				=>	\$maxN,
+				"n|max_N_run=i"			=>	\$maxN,
 				"p|part=i"					=>	\$part,
-				"e|mismatch=i"				=>	\$mismatch,
+				"e|mismatch=i"			=>	\$mismatch,
 				"q|qual=i"					=>	\$qual,
 				"keep_int_rs"				=>	\$int_rs_keep,
 				"keep_miss_hang"		=>	\$miss_hang_keep,
 
-				"t|threads|ncpu=i"			=>	\$ncpu,
+				"t|threads|ncpu=i"	=>	\$ncpu,
 
-				"v|ver|version"				=>	\$version,
-				"h|help"					=>	\$help,
-				"m|man|manual"				=>	\$manual);
+				"v|ver|version"			=>	\$version,
+				"h|help"						=>	\$help,
+				"m|man|manual"			=>	\$manual);
 
 
 ### VALIDATE ARGS
-my $ver="redrep-qc.pl Ver. 2.0 (11/21/2016 rev)";
+my $ver="redrep-qc.pl Ver. 2.1 (2/1/2017 rev)";
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
 die "\n$ver\n\n" if ($version);
@@ -309,20 +314,28 @@ pod2usage( -msg  => "ERROR!  Required argument -i (input file 1) not found.\n", 
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) not found.\n", -exitval => 2)  if (! $outDir);
 pod2usage( -msg  => "ERROR!  Required argument -m (metadata file) not found.\n", -exitval => 2)  if (! $metaFile);
 
+
+### DEBUG MODE
 if($debug)
 {	require warnings; import warnings;
 	require Data::Dumper; import Data::Dumper;
+	$keep=1;
 }
+
+
+### SET DEFAULT METHOD OF FILE PROPAGATION
+my $mv = \&move;
+if($keep)
+{	$mv = \&copy;
+}
+
 
 ### DECLARE OTHER GLOBALS
 my $sys;												# system call variable
-#(my $stub) = $inFile=~/^(.+)\.f.+/;					# inFile1 base filename
-#(my $stub2) = $inFile2=~/^(.+)\.f.+/ if ($inFile2);	# inFile2 base filename
 my $stub=fileparse($inFile, qr/\.[^.]*(\.gz)?$/);
 my $stub2=fileparse($inFile2, qr/\.[^.]*(\.gz)?$/) if $inFile2;
-
-
 our $manager = new Parallel::ForkManager( $ncpu );
+
 
 ### THROW ERROR IF OUTPUT DIRECTORY ALREADY EXISTS (unless $force is set)
 if(-d $outDir)
@@ -330,8 +343,7 @@ if(-d $outDir)
 	{	pod2usage( -msg  => "ERROR!  Output directory $outDir already exists.  Use --force flag to overwrite.", -exitval => 2);
 	}
 	else
-	{	# $sys=`rm -R $outDir`;
-		$sys=remove_tree($outDir);
+	{	$sys=remove_tree($outDir);
 	}
 }
 
@@ -340,47 +352,38 @@ if(-d $outDir)
 mkdir($outDir);
 
 
-### BIN/SCRIPT LOCATIONS
-my %ver;
-my %path;
-my $execDir=$ENV{'REDREPBIN'};
-my $java = "java -Xmx50g -d64 -jar ";
-$ver{'java'}=`java -version 2>&1|grep version`;
-$path{'java'}=`which java`;
-my $cutadapt = "cutadapt";
-$ver{'cutadapt'}=`$cutadapt --version 2>&1`;
-$path{'cutadapt'}=`which $cutadapt`;
-my $fastqc = "fastqc";
-$ver{'fastqc'}=`$fastqc -version 2>&1`;
-$path{'fastqc'}=`which $fastqc`;
-my $fastx = "fastx_barcode_splitter.pl";
-$ver{'fastx'}=`$fastx 2>&1|head -1`;
-$path{'fastx'}=`which $fastx`;
-chomp %ver;
-chomp %path;
-
-
-### CREATE STAT & LOG FILES
-$logOut="$outDir/log.txt" if (! $logOut);
-$statsOut="$outDir/stats.txt" if (! $statsOut);
-
+### CREATE LOG FILES
+$logOut="$outDir/log.qc.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
-open(our $STAT, "> $statsOut");
-print $LOG "$0 $script\n";
-print $LOG "RedRep Scripts: $execDir\n";
-print $LOG "Dependency: $path{'java'} ($ver{'java'})\n";
-print $LOG "Dependency: $path{'cutadapt'} ($ver{'cutadapt'})\n";
-print $LOG "Dependency: $path{'fastqc'} ($ver{'fastqc'})\n";
-print $LOG "Dependency: $path{'fastx'} ($ver{'fastx'})\n";
 logentry("SCRIPT STARTED ($ver)");
+print $LOG "$0 $script\n";
+print $LOG "Executing on ".hostname."\n";
+print $LOG find_job_info()."\n";
+
+### REDREP BIN/SCRIPT LOCATIONS
+my $execDir=$ENV{'REDREPBIN'};
+my $utilDir=$ENV{'REDREPUTIL'};
+my $libDir=$ENV{'REDREPLIB'};
+print $LOG "RedRep Bin: $execDir\n";
+print $LOG "RedRep Utilities: $utilDir\n";
+print $LOG "RedRep Libraries: $libDir\n";
+
+### CHECK FOR AND SETUP EXTERNAL DEPENDENCIES
+logentry("Checking External Dependencies");
+
+	# cutadapt
+	my $cutadapt=check_dependency("cutadapt","--version","s/\r?\n/ | /g","Available from http://code.google.com/p/cutadapt/");
+
+	# fastqc
+	my $fastqc=check_dependency("fastqc","--version","s/\r?\n/ | /g","Available from http://www.bioinformatics.babraham.ac.uk/projects/fastqc/");
+
+	# fastx_barcode_splitter
+	my $fastx_bc_split=check_dependency("fastx_barcode_splitter.pl"," |head -n 1","s/\r?\n/ | /g","Part of fastx toolkit, available from http://hannonlab.cshl.edu/fastx_toolkit/commandline.html");
 
 
-### CHECK FOR EXTERNAL DEPENDENCIES
-$sys=cmd('which cutadapt',"External dependency 'cutadapt' (http://code.google.com/p/cutadapt/) not installed in system PATH\n");
-#$cutadapt=which("cutadapt");
-$sys=cmd('which fastqc',"External dependency 'fastqc' (http://www.bioinformatics.babraham.ac.uk/projects/fastqc/) not installed in system PATH\n");
-
-$sys=cmd('which fastx_barcode_splitter.pl',"External dependency 'fastx_barcode_splitter.pl' (http://hannonlab.cshl.edu/fastx_toolkit/commandline.html) not installed in system PATH\n");
+### STAT FILE
+$statsOut="$outDir/stats.txt" if (! $statsOut);
+open(our $STAT, "> $statsOut");
 
 
 ### FILE LOCATIONS
@@ -494,8 +497,8 @@ print $STAT "\n";
 unless($no_preQC)
 {	logentry("BEGIN STEP 4: PRE-FASTQC");
 	mkdir($dir_preQC);
-	$sys=cmd("fastqc --outdir $dir_preQC --format fastq --threads $ncpu --extract --quiet $inFile", "Run Pre-fastqc File 1 (P1)");
-	$sys=cmd("fastqc --outdir $dir_preQC --format fastq --threads $ncpu --extract --quiet $inFile2", "Run Pre-fastqc File 2 (P2)") if ($inFile2);
+	$sys=cmd("$fastqc --outdir $dir_preQC --format fastq --threads $ncpu --extract --quiet $inFile", "Run Pre-fastqc File 1 (P1)");
+	$sys=cmd("$fastqc --outdir $dir_preQC --format fastq --threads $ncpu --extract --quiet $inFile2", "Run Pre-fastqc File 2 (P2)") if ($inFile2);
 }
 else
 {	logentry("OMITTING STEP 4: PRE-FASTQC");
@@ -505,12 +508,12 @@ else
 ### STEP 5 -- TRIMMING
 	logentry("BEGIN STEP 5: TRIMMING");
 	mkdir($dir_trim1);
-	$sys=cmd("cutadapt --quality-base 33 -q ${qual} -a $tpAdapt -m 1 -o '$dir_trim1/$stub.trim1.fastq' $inFile","Trim1-p2 (qual/3' seq adapter)");
+	$sys=cmd("$cutadapt --quality-base 33 -q ${qual} -a $tpAdapt -m 1 -o '$dir_trim1/$stub.trim1.fastq' $inFile","Trim1-p2 (qual/3' seq adapter)");
 	$sys=countFastq("$dir_trim1/$stub.trim1.fastq", "Trim1 count fastq");
 	print $STAT "=================================================\nSTATISTICS AFTER TRIMMING (step 5)\n";
 	print $STAT "File1 sequence count after trimming/filter step (quality/3'adapter trim): $sys";
 	if($inFile2)  #6/18/14 for some reason 3' adapter was being trimed in next step . . . changed to 5'
-	{	$sys=cmd("cutadapt --quality-base 33 -q ${qual} -a $fpAdapt -m 1 -o '$dir_trim1/$stub2.trim1.fastq' $inFile2","Trim1-p2 (qual/5' seq adapter)");
+	{	$sys=cmd("$cutadapt --quality-base 33 -q ${qual} -a $fpAdapt -m 1 -o '$dir_trim1/$stub2.trim1.fastq' $inFile2","Trim1-p2 (qual/5' seq adapter)");
 		$sys=countFastq("$dir_trim1/$stub2.trim1.fastq", "Trim1 count fastq");
 		print $STAT "File2 sequence count after trimming/filter step (quality/3'adapter trim): $sys";
 	}
@@ -526,11 +529,10 @@ else
 	foreach my $f (@BCFile_p1)
 	{	my $tmpFilename="$dir_trim1/$stub.trim1.fastq";
 		if(-e "$dir_deconv_p1/unmatched")
-		{	#$sys=cmd("mv $dir_deconv_p1/unmatched $dir_deconv_p1/unmatched_tmp","Use previously unmatched");
-			$sys=move("$dir_deconv_p1/unmatched","$dir_deconv_p1/unmatched_tmp");
+		{	$sys=&$mv("$dir_deconv_p1/unmatched","$dir_deconv_p1/unmatched_tmp");
 			$tmpFilename="$dir_deconv_p1/unmatched_tmp";
 		}
-		my $temp="cat $tmpFilename | fastx_barcode_splitter.pl --bol --bcfile ${BCFile_p1_base}_${f} --mismatches $mismatch --prefix '$dir_deconv_p1/' ";
+		my $temp="cat $tmpFilename | $fastx_bc_split --bol --bcfile ${BCFile_p1_base}_${f} --mismatches $mismatch --prefix '$dir_deconv_p1/' ";
 		$temp.="--partial $part" if ($part);
 		$sys=cmd("$temp","BC deconvolution read1, $f bp barcodes");
 		if(-e "$dir_deconv_p1/unmatched_tmp")
@@ -546,13 +548,12 @@ else
 		foreach my $f (@BCFile_p2)
 		{	my $tmpFilename="$dir_trim1/$stub2.trim1.fastq";
 			if(-e "$dir_deconv_p2/unmatched")
-			{	#$sys=cmd("mv $dir_deconv_p2/unmatched $dir_deconv_p2/unmatched_tmp","Use previously unmatched");
-				$sys=move("$dir_deconv_p2/unmatched","$dir_deconv_p2/unmatched_tmp");
+			{	$sys=&$mv("$dir_deconv_p2/unmatched","$dir_deconv_p2/unmatched_tmp");
 				$tmpFilename="$dir_deconv_p1/unmatched_tmp";
 			}
 			# If PE with 2-sided barcodes
 			if($BC_p2)
-			{	my $temp="cat $tmpFilename | fastx_barcode_splitter.pl --bol --bcfile ${BCFile_p2_base}_${f} --mismatches $mismatch --prefix '$dir_deconv_p2/' ";
+			{	my $temp="cat $tmpFilename | $fastx_bc_split --bol --bcfile ${BCFile_p2_base}_${f} --mismatches $mismatch --prefix '$dir_deconv_p2/' ";
 				$temp.="--partial $part" if ($part);
 				$sys=cmd("$temp","BC deconvolution read2");
 				if(-e "$dir_deconv_p2/unmatched_tmp")
@@ -565,7 +566,7 @@ else
 			# Originally a cp, made symbolic link to save space.  NEEDS TESTING
 			else
 			{	#$sys=cmd("ln -s $dir_trim1/$stub2.trim1.fastq $dir_deconv_p2/no_p2_index","P2 not barcoded.  Using p2 file without deconvolution.");
-				$sys=move("$dir_trim1/$stub2.trim1.fastq","$dir_deconv_p2/no_p2_index");
+				$sys=&$mv("$dir_trim1/$stub2.trim1.fastq","$dir_deconv_p2/no_p2_index");
 			}
 		}
 	}
@@ -590,19 +591,19 @@ logentry("BEGIN STEP 7: MERGE BARCODES");
 		{
 			if(! $inFile2)  # not paired end
 			{	#Copy file $file_p1 to $dir_recomb
-				$sys=move("$dir_deconv_p1/$file_p1","$dir_recomb/".$index{"$file_p1,no_p2_index"}.".singles");
+				$sys=&$mv("$dir_deconv_p1/$file_p1","$dir_recomb/".$index{"$file_p1,no_p2_index"}.".singles");
 			}
 			elsif($p1_p2_ind{$file_p1})   # paired end with two sided barcodes
 			{	foreach my $file_p2 (@{$p1_p2_ind{$file_p1}})
 				{	if(-e "$dir_deconv_p2/$file_p2.single_p2")
 					{	fastq_pair_repair("$dir_deconv_p1/$file_p1","$dir_deconv_p2/$file_p2.single_p2",$dir_recomb,$index{"$file_p1,$file_p2"},0);
 						#Move temp singles file $file_p2
-						$sys=move("$dir_recomb/$file_p2.single_p2","$dir_deconv_p2/");
+						$sys=&$mv("$dir_recomb/$file_p2.single_p2","$dir_deconv_p2/");
 					}
 					else
 					{	fastq_pair_repair("$dir_deconv_p1/$file_p1","$dir_deconv_p2/$file_p2",$dir_recomb,$index{"$file_p1,$file_p2"},0);
 						#Move temp singles file $file_p2
-						$sys=move("$dir_recomb/$file_p2.single_p2","$dir_deconv_p2/");
+						$sys=&$mv("$dir_recomb/$file_p2.single_p2","$dir_deconv_p2/");
 					}
 				}
 			}
@@ -612,29 +613,29 @@ logentry("BEGIN STEP 7: MERGE BARCODES");
 					#Rename p1 singles
 					$sys=move("$dir_recomb/$file_p1.single_p1","$dir_recomb/$index{$file_p1.',no_p2_index'}.single_p1");
 					#Move temp singles file
-					$sys=move("$dir_recomb/no_p2_index.single_p2","$dir_deconv_p2/");
+					$sys=&$mv("$dir_recomb/no_p2_index.single_p2","$dir_deconv_p2/");
 				}
 				else
 				{	fastq_pair_repair("$dir_deconv_p1/$file_p1","$dir_deconv_p2/no_p2_index",$dir_recomb,$index{"$file_p1,no_p2_index"},0);
 					#Rename p1 singles
 					$sys=move("$dir_recomb/$file_p1.single_p1","$dir_recomb/$index{$file_p1.',no_p2_index'}.single_p1");
 					#Move temp p2 singles file
-					$sys=move("$dir_recomb/no_p2_index.single_p2","$dir_deconv_p2/");
+					$sys=&$mv("$dir_recomb/no_p2_index.single_p2","$dir_deconv_p2/");
 				}
 			}
 		}
 	}
 	mkdir("$dir_recomb/singles");
 	#Move broken pairs
-	$sys=move($_,"$dir_recomb/singles/") for glob "$dir_recomb/*.single*";
+	$sys=&$mv($_,"$dir_recomb/singles/") for glob "$dir_recomb/*.single*";
 	if($inFile2)
 	{	mkdir("$dir_recomb/paired_p1");
 		#Move singles files to recomb directory
 		mkdir("$dir_recomb/paired_p2");
 		#Move p1 pairs
-		$sys=move($_,"$dir_recomb/paired_p1/") for glob "$dir_recomb/*.paired_p1";
+		$sys=&$mv($_,"$dir_recomb/paired_p1/") for glob "$dir_recomb/*.paired_p1";
 		#Move p2 pairs
-		$sys=move($_,"$dir_recomb/paired_p2/") for glob "$dir_recomb/*.paired_p2";
+		$sys=&$mv($_,"$dir_recomb/paired_p2/") for glob "$dir_recomb/*.paired_p2";
 	}
 }
 
@@ -693,7 +694,7 @@ logentry("BEGIN STEP 9: RECONCILE PAIRS");
 	}
 	else
 	{	#Move filter/final singles
-		$sys=move($_,"$dir_final_deconv/") for glob "$dir_filter/singles/*single";
+		$sys=&$mv($_,"$dir_final_deconv/") for glob "$dir_filter/singles/*single";
 	}
 	print $STAT "=================================================\nFINAL STATISTICS\n";
 	BCStats($dir_final_deconv);
@@ -746,7 +747,7 @@ unless($no_postQC)
 		@files=grep { (!/^\./) } readdir DIR;
 		close(DIR);
 		foreach my $file (@files)
-		{	$sys=cmd("fastqc --outdir $dir_postQC --format fastq --threads $ncpu --noextract --quiet $dir_final_deconv/$file", "Run Post-fastqc $dir_final_deconv/$file");
+		{	$sys=cmd("$fastqc --outdir $dir_postQC --format fastq --threads $ncpu --noextract --quiet $dir_final_deconv/$file", "Run Post-fastqc $dir_final_deconv/$file");
 		}
 	}
 	else
@@ -754,7 +755,7 @@ unless($no_postQC)
 		@files=grep { (!/^\./) } readdir DIR;
 		close(DIR);
 		foreach my $file (@files)
-		{	$sys=cmd("fastqc --outdir $dir_postQC --format fastq --threads $ncpu --noextract --quiet $dir_final_concat/$file", "Run Post-fastqc $dir_final_concat/$file");
+		{	$sys=cmd("$fastqc --outdir $dir_postQC --format fastq --threads $ncpu --noextract --quiet $dir_final_concat/$file", "Run Post-fastqc $dir_final_concat/$file");
 		}
 
 	}
@@ -768,7 +769,7 @@ else
 
 logentry("BEGIN STEP 12: CLEAN UP");
 
-if(! $intermed)
+if(! $keep)
 {	foreach my $f (@BCFile_p1)
 	{	#Remove Fastx Barcode Files p1
 		$sys=unlink("${BCFile_p1_base}_${f}");
@@ -797,20 +798,6 @@ exit 0;
 
 
 #######################################
-### avgQual
-# determine mean quality score for a fastq quality string
-sub avgQual
-{	my $qstr=shift;
-	chomp($qstr);
-	my $qstr_sum;
-	$qstr_sum += (ord $_)-33 foreach split //, $qstr;
-	my $len=length($qstr);
-	my $qavg=round($qstr_sum/$len,1);
-	return ($qavg,$len);
-}
-
-
-#######################################
 ### BC_File
 # make fastx_barcode_splitter.pl compatible barcode file
 sub BC_File
@@ -821,7 +808,7 @@ sub BC_File
 	my @BCLen;
 	my %seen;
 	my %uniq_bc;
-	logentry("Processing $direction barcode file") if($debug);
+	logentry("Processing $direction barcode file") if($main::debug);
 	foreach my $sample (sort {$a <=> $b} keys %meta)
 	{	if ($meta{$sample}{$direction."_index_seq"})
 		{	$BC=1;
@@ -854,7 +841,7 @@ sub BCStats
 {	my $inDir=shift;
 	my $sys;
 	my $total;
-	logentry("Processing Sequence Count Stats for $inDir") if($debug);
+	logentry("Processing Sequence Count Stats for $inDir") if($main::debug);
 
 	opendir(DIR,"$inDir");
 	my @files=grep { (!/^\./) } readdir DIR;
@@ -877,59 +864,6 @@ sub BCStats
 
 
 #######################################
-### cmd
-# run system command and collect output and error states
-sub cmd
-{	my $cmd=shift;
-	my $message=shift;
-
-	logentry("System call: $cmd") if($debug);
-
-	my $sys=`$cmd 2>&1`;
-	my $err=$?;
-	if ($err)
-	{	print $LOG "$message\n$cmd\nERROR $err\n$sys\n" if($LOG);
-		pod2usage( -msg  => "ERROR $err!  $message\n", -exitval => 2);
-		return 1;
-	}
-	else
-	{	return $sys;
-	}
-}
-
-
-#######################################
-### concat
-# concatenate multiple files specified in array
-sub concat
-{	my $inDir=shift;		# input directory
-	my $outDir=shift;		# output directory
-	my $outFile=shift;		# output filename
-	my @files=@{(shift)};	# array of filenames
-
-	my $file_str=join(' ',map { "$inDir/$_" } @files);
-	my $sys=cmd("cat $file_str > $outDir/$outFile","Make concatenated fastq file $outFile");
-}
-
-
-#######################################
-### countFastq
-# count sequences in fastq file
-sub countFastq
-{	my $path=shift;
-	my $message=shift;
-	my $sys;
-	if($path =~ /gz$/)
-	{	$sys=cmd('expr $(zcat '.$path.'| wc -l) / 4',$message);
-	}
-	else
-	{	$sys=cmd('expr $(cat '.$path.'| wc -l) / 4',$message);
-	}
-	return $sys;
-}
-
-
-#######################################
 ### fastq_pair_repair
 # matches pairs and segregated broken pair sequences from a pair of input fastq files
 sub fastq_pair_repair
@@ -939,7 +873,7 @@ sub fastq_pair_repair
 	my $outName=shift;
 	my $no_singles=shift;
 
-	logentry("Merging paired end mates: $PE1 $PE2") if($debug);
+	logentry("Merging paired end mates: $PE1 $PE2") if($main::debug);
 
 	# PARSE OUTPUT FILEBASE
 	my $out1=fileparse($PE1, qr/\.[^.]*(\.gz)?$/);
@@ -1031,7 +965,7 @@ sub filter
 	my $suffix=shift;
 	my %meta=%{(shift)};
 
-	logentry("Filtering $suffix") if($debug);
+	logentry("Filtering $suffix") if($main::debug);
 
 	opendir(DIR,"$in_dir");
 	my @files=grep { (!/^\./) } readdir DIR;
@@ -1056,7 +990,7 @@ sub filter
 			open(DISC, ">$out_dir/discarded/$stub.discard_$suffix");
 
 			my $count=0;
-			my $keep=0;
+			my $keep_seq=0;
 			my $trimLen=0;
 			my $seq="";
 			my $hang=$meta{$stub}{$direction.'_hang_seq'};
@@ -1070,7 +1004,7 @@ sub filter
 			my $stat_minLen=0;
 			my $stat_tot=0;
 			my $stat_disc=0;
-			my $max_N_run=$maxN+1;
+			my $max_N_run=$main::maxN+1;
 
 			while(<DAT>)
 			{	my $datIn=$_;
@@ -1082,16 +1016,16 @@ sub filter
 					{	$datIn=~ s/^(.{$BCLen_2,$BCLen})($hang)/$2/;
 						$trimLen=length($1);
 						$seq .= " EXPECT_BC=".$meta{$stub}{$direction."_index_seq"}." FOUND_BC=$1 SAMPLE=$stub";
-						$keep=1;
+						$keep_seq=1;
 					}
 					elsif(! $BCLen && ($datIn =~ /^$hang/))
 					{	$seq .= " EXPECT_BC=NONE FOUND_BC=NONE SAMPLE=$stub";
-						$keep=1;
+						$keep_seq=1;
 					}
 					else
 					{	$stat_fphang_miss++;
 						if($miss_hang_keep)
-						{	$keep=1;
+						{	$keep_seq=1;
 							my($exp_bc, $found_bc);
 							if($BCLen)
 							{	$datIn=~ s/^(.{$BCLen})// ;
@@ -1120,7 +1054,7 @@ sub filter
 							{	$seq .= " INT_RS=YES";
 							}
 							else
-							{	$keep=0 unless($int_rs_keep);
+							{	$keep_seq=0 unless($int_rs_keep);
 							}
 						}
 					}
@@ -1128,19 +1062,19 @@ sub filter
 					# internal runs of N's
 					if($datIn =~ /N{$max_N_run}/i)
 					{	$stat_Nrun++;
-						$keep=0;
+						$keep_seq=0;
 					}
 
 					# too long
-					if(length($datIn) > $maxLen)
+					if(length($datIn) > $main::maxLen)
 					{	$stat_maxLen++;
-						$keep=0;
+						$keep_seq=0;
 					}
 
 					# too short
-					if(length($datIn)<$minLen)
+					if(length($datIn)<$main::minLen)
 					{	$stat_minLen++;
-						$keep=0;
+						$keep_seq=0;
 					}
 					$seq .= "\n";
 				}
@@ -1162,7 +1096,7 @@ sub filter
 					}
 					$seq =~ s/(SAMPLE=\S+)/$1 LENGTH=$len MEAN_QUAL=$qavg/;
 
-					if($keep==1)
+					if($keep_seq==1)
 					{	print OUT $seq;
 						$stat_tot++;
 					}
@@ -1170,21 +1104,14 @@ sub filter
 					{	print DISC $seq;
 						$stat_disc++;
 					}
-					$keep=0;
+					$keep_seq=0;
 					$count=0;
 					$trimLen=0;
 					$seq="";
 				}
 			}
 			print TMP "$stub\t$stat_cnt\t$stat_intRS\t$stat_fphang_miss\t$stat_Nrun\t$stat_maxLen\t$stat_minLen\t$stat_disc\t$stat_tot\n";
-#			$stat_all_cnt+=$stat_cnt;
-#			$stat_all_intRS+=$stat_intRS;
-#			$stat_all_fphang_miss+=$stat_fphang_miss;
-#			$stat_all_Nrun+=$stat_Nrun;
-#			$stat_all_maxLen+=$stat_maxLen;
-#			$stat_all_minLen+=$stat_minLen;
-#			$stat_all_tot+=$stat_tot;
-#			$stat_all_disc+=$stat_disc;
+
 			close(OUT);
 			close(DAT);
 			close(DISC);
@@ -1198,106 +1125,11 @@ sub filter
 	my $counts=cmd("awk 'BEGIN {FS=OFS=".'"\t"'."} NR == 1 { n2 =\$2; n3 = \$3; n4 = \$4; n5 = \$5; n6 = \$6; n7 = \$7; n8 = \$8; n9 = \$9; next } { n2 += \$2; n3 += \$3; n4 += \$4; n5 += \$5; n6 +=\$6; n7 += \$7; n8 += \$8; n9 += \$9 } END { print n2, n3, n4, n5, n6, n7, n8, n9 }' $out_dir/tmp/all.stats.tmp");
 	$sys=cmd("sort -k1,1 $out_dir/tmp/all.stats.tmp","Sort temp stats file");
 	print $STAT $sys;
-#	print $STAT "TOTAL\t$stat_all_cnt\t$stat_all_intRS\t$stat_all_fphang_miss\t$stat_all_Nrun\t$stat_all_maxLen\t$stat_all_minLen\t$stat_all_disc\t$stat_all_tot\n";
 	print $STAT "TOTAL\t$counts\n";
 	print $STAT "\n";
-	cmd("rm -R $out_dir/tmp") unless ($intermed);
+	$sys=remove_tree("$out_dir/tmp") unless ($main::keep);
 
 }
 
-#######################################
-### IUPAC2regexp
-# Convert sequence with IUPAC approved degenerate bases to regexp compatible pattern and return.
-sub IUPAC2regexp
-{	my $seq_in=shift;
-	chomp($seq_in);
-	my $seq_out;
-	foreach my $char (split //, $seq_in)
-	{	if($char =~ /a/i)
-		{ $char = "[anvhdmwrANVHDMWR]";
-		}
-		elsif($char =~ /c/i)
-		{ $char = "[cnvhbmsyCNVHBMSY]";
-		}
-		elsif($char =~ /t/i)
-		{ $char = "[tunhdbkwyTUNHDBKWY]";
-		}
-		elsif($char =~ /g/i)
-		{ $char = "[gnvdbksrGNVDBKSR]";
-		}
-		elsif($char =~ /u/i)
-		{ $char = "[tunhdbkwyTUNHDBKWY]";
-		}
-		elsif($char =~ /n/i)
-		{ $char = "[actugnvhdbmkwsyrACTUGNVHDBMKWSYR]";
-		}
-		elsif($char =~ /v/i)
-		{ $char = "[acgnvmsrACGNVMSR]";
-		}
-		elsif($char =~ /h/i)
-		{ $char = "[actunhmywACTUNHMYW]";
-		}
-		elsif($char =~ /d/i)
-		{ $char = "[atugndwkrATUGNDWKR]";
-		}
-		elsif($char =~ /b/i)
-		{ $char = "[ctugnbyksCTUGNBYKS]";
-		}
-		elsif($char =~ /m/i)
-		{ $char = "[acmvhnACMVHN]";
-		}
-		elsif($char =~ /k/i)
-		{ $char = "[tugdbknTUGKDBN]";
-		}
-		elsif($char =~ /w/i)
-		{ $char = "[atuwhdnATUWHDN]";
-		}
-		elsif($char =~ /s/i)
-		{ $char = "[cgsvbnCGSVBN]";
-		}
-		elsif($char =~ /y/i)
-		{ $char = "[ctuyhbnCTUYHBN]";
-		}
-		elsif($char =~ /r/i)
-		{ $char = "[agrvdnAGRVDN]";
-		}
-		else
-		{	logentry("ERROR: sequence $seq_in from metadata file contains illegal non-IUPAC base: $char.");
-			die "ERROR: sequence $seq_in from metadata file contains illegal non-IUPAC base: $char.";
-		}
-		$seq_out .= $char;
-	}
-	return $seq_out;
-}
-
-#######################################
-### IUPAC_RC
-# Reverse Complement sequence all IUPAC Bases allowed
-sub IUPAC_RC {
-		my $seq = shift;
-		chomp($seq);
-  	my $seq = reverse($seq);
-    $seq =~ tr/ABCDGHMNRSTUVWXYabcdghmnrstuvwxy/TVGHCDKNYSAABWXRtvghcdknysaabwxr/;
-    return $seq;
-}
-
-
-#######################################
-### logentry
-# Enter time stamped log entry
-sub logentry
-{	my $message=shift;
-	print $LOG POSIX::strftime("%m/%d/%Y %H:%M:%S > $message\n", localtime);
-}
-
-
-#######################################
-### round
-# Round float ($number) to $dec digits
-sub round
-{	my $number = shift || 0;
-	my $dec = 10 ** (shift || 0);
-	return int( $dec * $number + .5 * ($number <=> 0)) / $dec;
-}
 
 __END__

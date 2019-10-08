@@ -127,29 +127,45 @@ Displays full manual.
 
 =item 2.01 = 1/20/2017: Minor code cleanup.
 
+=item 2.1 = 2/1/2017: Code cleanup including minimizing OS dependencies
+
 =back
 
 =head1 DEPENDENCIES
 
-=item usearch (tested with version usearch_i86linux32 5.2.32; must be accessible in the system PATH as "usearch5"))
+=head2 Requires the following Perl Modules:
 
-=item usearch (tested with version usearch_i86linux32 8.1.1691; must be accessible in the system PATH as "usearch8"))
+=head3 Non-Core (Not installed by default in some installations of Perl)
 
-=head2 Requires the following Perl libraries:
+=over 3
+
+=item File::Which
+
+=item Parallel::ForkManager
+
+=back
+
+=head3 Core Modules (Installed by default in most Perl installations)
 
 =over 3
 
 =item strict
 
-=item Getopt::Long
+=item Exporter
 
 =item File::Basename
+
+=item File::Copy
+
+=item File::Path
+
+=item Getopt::Long
 
 =item Pod::Usage
 
 =item POSIX
 
-=item
+=item Sys::Hostname
 
 =back
 
@@ -157,7 +173,9 @@ Displays full manual.
 
 =over 3
 
-=item
+=item usearch/uclust (ver 5.x or earlier)
+
+=item usearch (tested with version v11.0.667_i86linux32; must be accessible in the system PATH as "usearch8"))
 
 =back
 
@@ -185,23 +203,29 @@ my $script=join(' ',@ARGV);
 
 use strict;
 use Getopt::Long;
-use File::Basename;
 use Pod::Usage;
-use POSIX;
-#use Parallel::ForkManager;
+use File::Basename qw(fileparse);
+use File::Copy qw(copy move);
+use File::Path qw(make_path remove_tree);
+use File::Which qw(which);
+use Sys::Hostname qw(hostname);
+
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPLIB.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPLIB'} && -e $ENV{'REDREPLIB'} && -d $ENV{'REDREPLIB'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPUTIL.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPUTIL'} && -e $ENV{'REDREPUTIL'} && -d $ENV{'REDREPUTIL'});
+die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
+
+use lib $ENV{'REDREPLIB'};
+use RedRep::Utils qw(check_dependency cmd find_job_info get_execDir logentry logentry_then_die);
 
 sub binClass;
-sub cmd;
-sub logentry;
-
+sub centroid_rename;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($inFile,$inFile2,$outDir,$help,$manual,$force,$metaFile,$keep,$debug,$version,$hist_stats);
-
+my($inFile,$inFile2,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$hist_stats);
+our($debug);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
-#my $statsOut;								# default post-processed
 my $ncpu		=	1;
 my $id			=	0.98;
 my $minlen		=	35;
@@ -217,14 +241,11 @@ my $lenBinNum	=	4;
 my $lenBinEnd	=	999;		# hard-coded max
 
 
-
 GetOptions (
 				"1|i|in|in1=s"				=>	\$inFile,
 				"2|in2=s"					=>	\$inFile2,
 				"o|out=s"					=>	\$outDir,
-#				"c|meta=s"					=>	\$metaFile,
 				"l|log=s"					=>	\$logOut,
-#				"s|stats=s"					=>	\$statsOut,
 
 				"f|force"					=>	\$force,
 				"d|debug"					=>	\$debug,
@@ -253,17 +274,26 @@ GetOptions (
 ### VALIDATE ARGS
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
-my $ver="redrep-cluster.pl Ver. 2.01 (1/20/2017 rev)";
+my $ver="redrep-cluster.pl Ver. 2.1 (2/1/2017 rev)";
 die "\n$ver\n\n" if ($version);
 pod2usage( -msg  => "ERROR!  Required argument -i (input file 1) not found.\n", -exitval => 2) if (! $inFile);
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) not found.\n", -exitval => 2)  if (! $outDir);
-#pod2usage( -msg  => "ERROR!  Required argument -m (metadata file) not found.\n", -exitval => 2)  if (! $metaFile);
 
+
+### DEBUG MODE
 if($debug)
 {	require warnings; import warnings;
 	require Data::Dumper; import Data::Dumper;
 	$keep=1;
 }
+
+
+### SET DEFAULT METHOD OF FILE PROPAGATION
+my $mv = \&move;
+if($keep)
+{	$mv = \&copy;
+}
+
 
 # Make sure hist bin size parameters in spec
 $sizeBinEnd=($sizeBinSize*$sizeBinNum)+$sizeBinStart+99 if(($sizeBinSize*$sizeBinNum)+$sizeBinStart > $sizeBinEnd);
@@ -273,9 +303,6 @@ $lenBinEnd=($lenBinSize*$lenBinNum)+$lenBinStart+99 if(($lenBinSize*$lenBinNum)+
 ### DECLARE OTHER GLOBALS
 my $sys;												# system call variable
 my $stub=fileparse($inFile, qr/\.[^.]*(\.gz)?$/);
-#my $stub2=fileparse($inFile2, qr/\.[^.]*(\.gz)?$/);
-
-#our $manager = new Parallel::ForkManager( $ncpu );
 
 
 ### THROW ERROR IF OUTPUT DIRECTORY ALREADY EXISTS (unless $force is set)
@@ -284,7 +311,7 @@ if(-d $outDir)
 	{	pod2usage( -msg  => "ERROR!  Output directory $outDir already exists.  Use --force flag to overwrite.", -exitval => 2);
 	}
 	else
-	{	$sys=`rm -R $outDir`;
+	{	$sys=remove_tree($outDir);
 	}
 }
 
@@ -294,38 +321,44 @@ mkdir($outDir);
 mkdir($outDir."/intermed");
 
 
-### BIN/SCRIPT LOCATIONS
-my %ver;
-my %path;
-my $execDir=$ENV{'REDREPBIN'};
-my $sort_fastq_sh="$execDir/sort-fastq.sh";
-my $fastq2fasta_pl="$execDir/fastq2fasta.pl";
-my $fasta_abbrev_pl="$execDir/fasta-abbrev.pl";
-my $usearch5="$execDir/usearch5";
-my $usearch8="$execDir/usearch8";
-$ver{'usearch'}=`$usearch8 --version 2>&1`;
-$path{'usearch'}=$usearch8;
-my $clstr_sort_by_pl="$execDir/clstr_sort_by.pl";
-my $clstr_sort_prot_by_pl="$execDir/clstr_sort_prot_by.pl";
-my $plot_len1_pl="$execDir/plot_len1.pl";
-my $CDHitClustComp_pl="$execDir/CDHitClustComp.pl";
-chomp %ver;
-chomp %path;
-
-
 ### CREATE LOG FILES
 $logOut="$outDir/log.cluster.txt" if (! $logOut);
-
 open(our $LOG, "> $logOut");
-print $LOG "$0 $script\n";
-print $LOG "RedRep Scripts: $execDir\n";
-print $LOG "Dependency: $path{'usearch'} ($ver{'usearch'})\n";
 logentry("SCRIPT STARTED ($ver)");
+print $LOG "Command: $0 $script\n";
+print $LOG "Executing on ".hostname."\n";
+print $LOG find_job_info()."\n";
+
+
+### REDREP BIN/SCRIPT LOCATIONS
+my $execDir=$ENV{'REDREPBIN'};
+my $utilDir=$ENV{'REDREPUTIL'};
+my $libDir=$ENV{'REDREPLIB'};
+print $LOG "RedRep Bin: $execDir\n";
+print $LOG "RedRep Utilities: $utilDir\n";
+print $LOG "RedRep Libraries: $libDir\n";
+
+
+### BIN/SCRIPT LOCATIONS
+my $sort_fastq_sh="$utilDir/sort-fastq.sh";
+my $fastq2fasta_pl="$utilDir/fastq2fasta.pl";
+my $fasta_abbrev_pl="$utilDir/fasta-abbrev.pl";
+my $CDHitClustComp_pl="$utilDir/CDHitClustComp.pl";
+#my $usearch5="$execDir/usearch5";
+#my $usearch8="$execDir/usearch8";
+my $clstr_sort_by_pl=which "clstr_sort_by.pl";
+my $clstr_sort_prot_by_pl=which "clstr_sort_prot_by.pl";
+my $plot_len1_pl=which "plot_len1.pl";
 
 
 ### CHECK FOR EXTERNAL DEPENDENCIES
-# Not yet implemented
+logentry("Checking External Dependencies");
 
+my $usearch=check_dependency("usearch","--version","s/\r?\n/ | /g");
+my $uclust=check_dependency("uclust","--version","s/\r?\n/ | /g");
+my $clstr_sort_by_pl=check_dependency("$clstr_sort_by_pl");
+my $clstr_sort_prot_by_pl=check_dependency("$clstr_sort_prot_by_pl");
+my $usearch5=$uclust;
 
 ### OUTPUT FILE LOCATIONS
 my $intermed="$outDir/intermed";
@@ -382,7 +415,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 			if($slicesize>$lowerlim)
 			{	close(SUB);
 				logentry("RUNNING UCLUST SPLIT $it");
-				$sys=cmd("$usearch8 --cluster_smallmem $slice --leftjust $sizeinout --id $id --centroids $splitDir$it/$it.centroid --uc $splitDir$it/$it.uc --log $splitDir$it/uclust_$it.log","UCLUST FASTA SPLIT $slice");
+				$sys=cmd("$usearch --cluster_smallmem $slice --leftjust $sizeinout --id $id --centroids $splitDir$it/$it.centroid --uc $splitDir$it/$it.uc --log $splitDir$it/uclust_$it.log","UCLUST FASTA SPLIT $slice");
 				$slice="$splitDir$it/$it.centroid";
 				$it++;
 				$sys=cmd("mkdir $splitDir$it","Make split $it directory");
@@ -400,8 +433,8 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 
 	# UCLUST IF SMALLER THAN 4GB OR FINAL SPLIT
 	logentry("RUNNING UCLUST FINAL");
-	$sys=cmd("$usearch8 --cluster_smallmem $slice --leftjust $sizeinout --id $id --centroids $uc_centroid --uc $uc_uc --log $outDir/uclust_final.log","UCLUST FINAL RUN: $slice");
-	$sys=cmd("$usearch8 --sortbysize $uc_centroid --fastaout $uc_centroid_filter --minsize $minsize","UCLUST CENTROID FILTER FINAL RUN: $slice") if($minsize>1);
+	$sys=cmd("$usearch --cluster_smallmem $slice --leftjust $sizeinout --id $id --centroids $uc_centroid --uc $uc_uc --log $outDir/uclust_final.log","UCLUST FINAL RUN: $slice");
+	$sys=cmd("$usearch --sortbysize $uc_centroid --fastaout $uc_centroid_filter --minsize $minsize","UCLUST CENTROID FILTER FINAL RUN: $slice") if($minsize>1);
 
 	$sys=cmd("grep '^S' $uc_uc > $uc_uc_seeds","Make seeds uc file");
 	$sys=cmd("$usearch5 --uc2fasta $uc_uc_seeds --input $fasta_sorted_abbrev --output $uc_seeds","Make seeds fasta file");
@@ -463,11 +496,11 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP");
-	$sys=cmd("mv $uc_clstr.sort $outDir","Move clstr sort file");
-	$sys=cmd("mv $uc_centroid_ren $outDir","Move centroid fasta file");
-	$sys=cmd("mv $uc_centroid_filter_ren $outDir","Move filtered centroid fasta file") if(-e $uc_centroid_filter);
+	$sys=&$mv($uc_clstr.sort,$outDir);
+	$sys=&$mv($uc_centroid_ren,$outDir);
+	$sys=&$mv($uc_centroid_filter_ren,$outDir) if(-e $uc_centroid_filter);
 	if(! $keep | ! $debug)
-	{	$sys=cmd("rm -R $intermed","Remove intermediate file directory");
+	{	$sys=remove_tree($intermed);
 	}
 
 
@@ -483,9 +516,8 @@ exit 0;
 
 #######################################
 ### binClass
-# run system command and collect output and error states
+#
 sub binClass
-
 {	my $number=shift;
 	my $size=shift;
 	my $start=shift;
@@ -514,36 +546,6 @@ sub centroid_rename
    close(CEN_IN);
    close(CEN_OUT);
 }
-#######################################
-### cmd
-# run system command and collect output and error states
-sub cmd
-{	my $cmd=shift;
-	my $message=shift;
-
-	logentry("System call: $cmd") if($debug);
-
-	my $sys=`$cmd 2>&1`;
-	my $err=$?;
-	if ($err)
-	{	print $LOG "$message\n$cmd\nERROR $err\n$sys\n" if($LOG);
-		pod2usage( -msg  => "ERROR $err!  $message\n", -exitval => 2);
-		return 1;
-	}
-	else
-	{	return $sys;
-	}
-}
-
-
-#######################################
-### logentry
-# Enter time stamped log entry
-sub logentry
-{	my $message=shift;
-	print $LOG POSIX::strftime("%m/%d/%Y %H:%M:%S > $message\n", localtime);
-}
-
 
 
 __END__
