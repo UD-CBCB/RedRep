@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-SNPcall.pl Ver. 2.11 (10/9/2019 rev)";
+my $ver="redrep-SNPcall.pl Ver. 2.2beta [10/11/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -12,7 +12,9 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 use lib $ENV{'REDREPLIB'};
 use RedRep::Utils qw(check_dependency check_jar cmd find_job_info logentry logentry_then_die);
 use Getopt::Long qw(:config no_ignore_case);
+use Parallel::ForkManager;
 use Pod::Usage;
+use POSIX qw(floor);
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
 use File::Path qw(make_path remove_tree);
@@ -84,7 +86,8 @@ if($keep)
 
 ### DECLARE OTHER GLOBALS
 my $sys;												# system call variable
-
+my $hmm_threads=1;							# 1 hmm thread with 8 splits is marginally faster than 2hmm threads with 4 splits (within 5%)
+my $manager = new Parallel::ForkManager( floor($ncpu/$hmm_threads) );
 
 ### THROW ERROR IF OUTPUT DIRECTORY ALREADY EXISTS (unless $force is set)
 if(-d $outDir)
@@ -99,12 +102,13 @@ if(-d $outDir)
 
 ### OUTPUT FILE LOCATIONS
 my $intermed="$outDir/intermed";
-
+my $gvcf_dir=$outDir."/gvcf";
 
 ### CREATE OUTPUT DIR
 mkdir($outDir);
 mkdir($outDir."/intermed");
-mkdir($outDir."/gvcf");
+mkdir($gvcf_dir);
+
 my(@files);
 if(-d $in)
 {	opendir(DIR,$in);
@@ -146,23 +150,25 @@ print $LOG "RedRep Libraries: $libDir\n";
 logentry("Checking External Dependencies",0);
 
 	# java
-	our $java=check_dependency("java","-version","s/\r?\n/ | /g");
-	$java = "${java} -Xmx${mem}g $javaarg -d64 -jar ";
+	#our $java=check_dependency("java","-version","s/\r?\n/ | /g");    #not currently needed; retain for future
+	my $java_opts = "-Xmx${mem}g $javaarg -d64";
 
 	# samtools
 	my $samtools=check_dependency("samtools","--version","s/\r?\n/ | /g");
 
-	#picard
-	#picard
-	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
-	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
+#	#picard
+#	#picard
+#	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
+#	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
 
 	#GATK
-	my $GATK=check_jar("GATK",$ENV{'GATKJAR'},"--version","s/\r?\n/ | /g","Environment Variable GATKJAR is not defined or is a not pointing to a valid jar file!  Please define valid GATK jar file location with command: export GATKJAR='PATH_TO_GATK_JAR");
+	#	my $GATK=check_jar("GATK",$ENV{'GATKJAR'},"--version","s/\r?\n/ | /g","Environment Variable GATKJAR is not defined or is a not pointing to a valid jar file!  Please define valid GATK jar file location with command: export GATKJAR='PATH_TO_GATK_JAR");
+	my $gatk  = check_dependency("gatk","--version 2>&1 | tail -n +4","s/\r?\n/ | /g");
+	$gatk .= qq( --java-options "$java_opts");
 
 
 ### OUTPUT FILE LOCATIONS
-#my $gatk_out="$outDir/combined.SNP.vcf";
+	my $gvcf_fofn_out="$outDir/gvcf.fofn";
 
 
 ############
@@ -177,7 +183,7 @@ logentry("Checking External Dependencies",0);
 	}
 	if(! -e $stub2.".dict")
 	{	logentry("REFERENCE DICTIONARY NOT FOUND: BUILDING",0);
-		$sys=cmd("$java $picard CreateSequenceDictionary R=$refFasta O=$stub2.dict","Building reference dictionary");
+		$sys=cmd("$gatk CreateSequenceDictionary --REFERENCE $refFasta --OUTPUT $stub2.dict","Building reference dictionary");
 	}
 
 	my $bam_files=join(" -I ",@files);
@@ -195,10 +201,18 @@ logentry("Checking External Dependencies",0);
 	$GATKargs.="$gatkarg " if($gatkarg);
   logentry("GATK VARIANT CALLING: ERC GVCF SINGLE-SAMPLE DISCOVERY MODE",0);
 
-foreach my $file (@files)
-{	my $stub=fileparse($file, qr/\.[^.]*(\.gz)?$/);
-	$sys=cmd("$java $GATK -T HaplotypeCaller -R $refFasta -ERC GVCF -I $file -o $outDir/$stub.g.vcf -gt_mode DISCOVERY $GATKargs -nct $ncpu -rf BadCigar","Run HaplotypeCaller on ${file}");
-}
+	open(FOFN,"> $gvcf_fofn_out");
+	foreach my $file (@files)
+	{	$manager->start and next;
+		logentry("BEGIN PROCESSING FILE $file",0);
+		my $stub=fileparse($file, qr/\.[^.]*(\.gz)?$/);
+		$sys=cmd("$gatk HaplotypeCaller -R $refFasta -ERC GVCF -I $file -O $gvcf_dir/$stub.g.vcf --genotyping-mode DISCOVERY $GATKargs --native-pair-hmm-threads $hmm_threads -RF GoodCigarReadFilter","Run HaplotypeCaller on ${file}");
+		print FOFN "$outDir/$stub.g.vcf\n";
+		logentry("FINISH PROCESSING FILE $file",0);
+		$manager->finish;
+	}
+	$manager->wait_all_children;
+	close(FOFN);
 
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP",0);

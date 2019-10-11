@@ -11,7 +11,7 @@ use File::Path qw(make_path remove_tree);
 use File::Which qw(which);
 #use IO::Zlib;
 
-our @EXPORT    = qw(check_dependency cmd logentry logentry_then_die);
+our @EXPORT    = qw(check_dependency cmd find_job_info logentry logentry_then_die);
 our @EXPORT_OK = qw(avgQual check_jar cmd_STDOUT concat countFastq find_job_info IUPAC2regexp IUPAC_RC round);
 
 

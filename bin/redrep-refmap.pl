@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-refmap.pl Ver. 2.11 (10/9/2019 rev)";
+my $ver="redrep-refmap.pl Ver. 2.2beta [10/11/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -10,7 +10,7 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
 
 use lib $ENV{'REDREPLIB'};
-use RedRep::Utils qw(check_dependency check_jar cmd cmd_STDOUT find_job_info logentry logentry_then_die);
+use RedRep::Utils qw(check_dependency cmd cmd_STDOUT find_job_info logentry logentry_then_die);
 use Getopt::Long qw(:config no_ignore_case);
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
@@ -100,11 +100,12 @@ if(-d $outDir)
 
 ### OUTPUT FILE LOCATIONS
 my $intermed="$outDir/intermed";
-
+my $bam_dir=$outDir."/bam";
 
 ### CREATE OUTPUT DIR
 mkdir($outDir);
 mkdir($outDir."/intermed");
+mkdir($bam_dir);
 my(@files);
 if(-d $in)
 {	opendir(DIR,$in);
@@ -146,8 +147,8 @@ print $LOG "RedRep Libraries: $libDir\n";
 logentry("Checking External Dependencies",0);
 
 	# java
-	our $java=check_dependency("java","-version","s/\r?\n/ | /g");
-	$java = "${java} -Xmx${mem}g $javaarg -d64 -jar ";
+	#our $java=check_dependency("java","-version","s/\r?\n/ | /g");
+	my $java_opts = "-Xmx${mem}g $javaarg -d64";
 
 	# bwa
 	my $bwa=check_dependency("bwa",' 2>&1 |grep "Version"',"s/\r?\n/ | /g");
@@ -155,9 +156,14 @@ logentry("Checking External Dependencies",0);
 	# samtools
 	my $samtools=check_dependency("samtools","--version","s/\r?\n/ | /g");
 
-	#picard
-	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
-	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
+#	#picard
+#	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
+#	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
+
+	#GATK
+#	my $GATK=check_jar("GATK",$ENV{'GATKJAR'},"--version","s/\r?\n/ | /g","Environment Variable GATKJAR is not defined or is a not pointing to a valid jar file!  Please define valid GATK jar file location with command: export GATKJAR='PATH_TO_GATK_JAR");
+	my $gatk  = check_dependency("gatk","--version 2>&1 | tail -n +4","s/\r?\n/ | /g");
+	$gatk .= qq( --java-options "$java_opts");
 
 
 ############
@@ -168,13 +174,14 @@ logentry("Checking External Dependencies",0);
 
 foreach my $inFile(@files)
 {
+	logentry("BEGIN PROCESSING FILE $inFile",0);
 	my $stub=fileparse($inFile, qr/\.[^.]*$/);
 
 	### OUTPUT FILE LOCATIONS
 	my $bwa_out="$intermed/$stub.bwa";
 	my $bwa_bam="$intermed/$stub.bam";
 	my $rg_bam="$intermed/$stub.rg.bam";
-	my $sort_bam="$outDir/$stub.rg.sort.bam";
+	my $sort_bam="$bam_dir/$stub.rg.sort.bam";
 
 	if(! -e $refFasta.".fai")
 	{	logentry("REFERENCE FASTA INDEX NOT FOUND: BUILDING",0);
@@ -182,7 +189,7 @@ foreach my $inFile(@files)
 	}
 	if(! -e "$refPath/$stub2.dict")
 	{	logentry("REFERENCE DICTIONARY NOT FOUND: BUILDING",0);
-		$sys=cmd("$java $picard CreateSequenceDictionary R=$refFasta O=$refPath/$stub2.dict","Building reference dictionary");
+		$sys=cmd("$gatk CreateSequenceDictionary -R $refFasta -O $refPath/$stub2.dict","Building reference dictionary");
 	}
 
 	if(! -e $refFasta.".amb" || ! -e $refFasta.".ann" || ! -e $refFasta.".bwt" || ! -e $refFasta.".pac" || ! -e $refFasta.".sa")
@@ -199,13 +206,15 @@ foreach my $inFile(@files)
 	$sys=cmd("cat $bwa_out | $samtools view -bS -F 4 - -o $bwa_bam","Convert BWA to BAM");
 
 	logentry("ADD READ GROUPS TO ALIGNMENT BAM",0);
-	$sys=cmd("$java $picard AddOrReplaceReadGroups I=$bwa_bam O=$rg_bam SORT_ORDER=coordinate RGID=$stub RGLB=$stub RGPL=illumina RGPU=$stub RGSM=$stub VALIDATION_STRINGENCY=LENIENT MAX_RECORDS_IN_RAM=500000","Add read groups to BAM");
+	$sys=cmd("$gatk AddOrReplaceReadGroups -I $bwa_bam -O $rg_bam --SORT_ORDER coordinate --RGID $stub --RGLB $stub --RGPL illumina --RGPU $stub --RGSM $stub --VALIDATION_STRINGENCY LENIENT --MAX_RECORDS_IN_RAM 500000","Add read groups to BAM");
 
 	logentry("SORT ALIGNMENT BAM FILE",0);
-	$sys=cmd("$java $picard ReorderSam I=$rg_bam O=$sort_bam REFERENCE=$refFasta","Sorting BAM file");
+	$sys=cmd("$gatk ReorderSam -I $rg_bam -O $sort_bam --REFERENCE $refFasta","Sorting BAM file");
 
 	logentry("BUILDING BAM INDEX",0);
 	$sys=cmd("$samtools index $sort_bam","Building BAM index");
+
+	logentry("FINISH PROCESSING FILE $inFile",0);
 }
 
 	# FILE CLEAN UP
