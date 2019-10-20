@@ -11,7 +11,7 @@ use File::Path qw(make_path remove_tree);
 use File::Which qw(which);
 #use IO::Zlib;
 
-our @EXPORT    = qw(check_dependency cmd find_job_info logentry logentry_then_die);
+our @EXPORT    = qw(check_dependency cmd dir_get_files find_job_info find_tmpdir logentry logentry_then_die stage_files);
 our @EXPORT_OK = qw(avgQual check_jar cmd_STDOUT concat countFastq find_job_info IUPAC2regexp IUPAC_RC round);
 
 
@@ -22,6 +22,7 @@ sub cmd;
 sub cmd_STDOUT;
 sub concat;
 sub countFastq;
+sub dir_get_files;
 sub find_job_info;
 #sub get_execDir;
 sub IUPAC2regexp;
@@ -29,13 +30,14 @@ sub IUPAC_RC;
 sub logentry;
 sub logentry_then_die;
 sub round;
+sub stage_files;
 
 
 #######################################
 ### avgQual
 # determine mean quality score for a fastq quality string
-sub avgQual
-{	my $qstr=shift;
+sub avgQual {
+	my $qstr=shift;
 	chomp($qstr);
 	my $qstr_sum;
 	$qstr_sum += (ord $_)-33 foreach split //, $qstr;
@@ -93,19 +95,19 @@ sub check_jar {
 #######################################
 ### cmd
 # run system command and collect output and error states
-sub cmd
-{	my $cmd=shift;
+sub cmd {
+	my $cmd=shift;
 	my $message=shift;
 
 	logentry("System call ($message): $cmd",1);
 
 	my $sys=`$cmd 2>&1`;
 	my $err=$?;
-	if ($err)
-	{	logentry_then_die("ERROR while trying to run a shell command.  Details:\ncommand: $cmd\nError Code: $err\nError message:\n$sys");
+	if ($err) {
+		logentry_then_die("ERROR while trying to run a shell command.  Details:\ncommand: $cmd\nError Code: $err\nError message:\n$sys");
 	}
-	else
-	{	logentry("STDOUT ($message): $sys",4);
+	else {
+		logentry("STDOUT ($message): $sys",4);
 	}
 	return $sys;
 }
@@ -114,22 +116,22 @@ sub cmd
 #######################################
 ### cmd_STDOUT
 # run system command and collect output and error states (when std out must be used separately)
-sub cmd_STDOUT
-{	my $cmd=shift;
+sub cmd_STDOUT {
+	my $cmd=shift;
 	my $message=shift;
 
 	logentry("System call ($message): $cmd",1);
 
 	my $sys=`$cmd 2> err`;
 	my $err=$?;
-	if ($err)
-	{	$sys=`cat err`;
+	if ($err) {
+		$sys=`cat err`;
 		unlink("err");
 		logentry_then_die("ERROR while trying to run a shell command ($message).  Details:\ncommand: $cmd\nError Code: $err\nError message:\n$sys");
 		return 1;
 	}
-	else
-	{ unlink("err");
+	else {
+		unlink("err");
 		logentry("STDOUT ($message): $sys",4);
 	}
 	return $sys;
@@ -139,8 +141,8 @@ sub cmd_STDOUT
 #######################################
 ### concat
 # concatenate multiple files specified in array
-sub concat
-{	my $inDir=shift;		# input directory
+sub concat {
+	my $inDir=shift;		# input directory
 	my $outDir=shift;		# output directory
 	my $outFile=shift;		# output filename
 	my @files=@{(shift)};	# array of filenames
@@ -153,23 +155,37 @@ sub concat
 #######################################
 ### countFastq
 # count sequences in fastq file
-sub countFastq
-{	my $path=shift;
+sub countFastq {
+	my $path=shift;
 	my $message=shift;
 	my $sys;
-	if($path =~ /gz$/)
-	{	$sys=cmd('expr $(zcat '.$path.'| wc -l) / 4',$message);
+	if($path =~ /gz$/) {
+		$sys=cmd('expr $(zcat '.$path.'| wc -l) / 4',$message);
 		#my $fh = IO::Zlib->new($path) or logentry_then_die("ERROR: Can't open file $path: $!");
 		#$count++ while <$fh>;
 		#undef($fh);
 	}
-	else
-	{	$sys=cmd('expr $(cat '.$path.'| wc -l) / 4',$message);
+	else {
+		$sys=cmd('expr $(cat '.$path.'| wc -l) / 4',$message);
 		#open(FILE, "< $path") or logentry_then_die("ERROR: Can't open file $path: $!");
 		#$count++ while <FILE>;
 		#close(FILE);
 	}
 	return $sys;
+}
+
+
+#######################################
+### dir_get_files
+# open directory and return list of file paths matching a regexp pattern (case insensitive)
+sub dir_get_files {
+	my $dirpath=shift;
+	my $pattern=shift;
+	opendir(my $DIR,$dirpath) || logentry_then_die("ERROR: Could not open directory path: $dirpath");
+	my @tmpfiles=grep /\$pattern$/i, readdir($DIR);
+	close($DIR);
+	s/^/$dirpath\// for @tmpfiles;  #prepend $in (dirpath) to each element
+	return @tmpfiles;
 }
 
 
@@ -207,6 +223,27 @@ return $info;
 
 
 #######################################
+### find_tmpdir
+# Determine dafault location of temporary directory
+sub find_tmpdir {
+	my $tmpdir='/tmp';
+	if ($ENV{'REDREP_TMPDIR'}) {
+		$tmpdir=$ENV{'REDREP_TMPDIR'};
+	}
+	elsif ($ENV{'TMPDIR'}) {
+		$tmpdir=$ENV{'TMPDIR'};
+	}
+	elsif ($ENV{'TEMP'}) {
+		$tmpdir=$ENV{'TEMP'};
+	}
+	elsif ($ENV{'TMP'}) {
+		$tmpdir=$ENV{'TMP'};
+	}
+	return $tmpdir;
+}
+
+
+#######################################
 ### get_execDir
 # Determine the RedRep bin location
 #sub get_execDir {
@@ -233,61 +270,61 @@ return $info;
 #######################################
 ### IUPAC2regexp
 # Convert sequence with IUPAC approved degenerate bases to regexp compatible pattern and return.
-sub IUPAC2regexp
-{	my $seq_in=shift;
+sub IUPAC2regexp {
+	my $seq_in=shift;
 	chomp($seq_in);
 	my $seq_out;
-	foreach my $char (split //, $seq_in)
-	{	if($char =~ /a/i)
-		{ $char = "[anvhdmwrANVHDMWR]";
+	foreach my $char (split //, $seq_in) {
+		if($char =~ /a/i) {
+			$char = "[anvhdmwrANVHDMWR]";
 		}
-		elsif($char =~ /c/i)
-		{ $char = "[cnvhbmsyCNVHBMSY]";
+		elsif($char =~ /c/i) {
+			$char = "[cnvhbmsyCNVHBMSY]";
 		}
-		elsif($char =~ /t/i)
-		{ $char = "[tunhdbkwyTUNHDBKWY]";
+		elsif($char =~ /t/i) {
+			$char = "[tunhdbkwyTUNHDBKWY]";
 		}
-		elsif($char =~ /g/i)
-		{ $char = "[gnvdbksrGNVDBKSR]";
+		elsif($char =~ /g/i) {
+			$char = "[gnvdbksrGNVDBKSR]";
 		}
-		elsif($char =~ /u/i)
-		{ $char = "[tunhdbkwyTUNHDBKWY]";
+		elsif($char =~ /u/i) {
+			$char = "[tunhdbkwyTUNHDBKWY]";
 		}
-		elsif($char =~ /n/i)
-		{ $char = "[actugnvhdbmkwsyrACTUGNVHDBMKWSYR]";
+		elsif($char =~ /n/i) {
+			$char = "[actugnvhdbmkwsyrACTUGNVHDBMKWSYR]";
 		}
-		elsif($char =~ /v/i)
-		{ $char = "[acgnvmsrACGNVMSR]";
+		elsif($char =~ /v/i) {
+			$char = "[acgnvmsrACGNVMSR]";
 		}
-		elsif($char =~ /h/i)
-		{ $char = "[actunhmywACTUNHMYW]";
+		elsif($char =~ /h/i) {
+			$char = "[actunhmywACTUNHMYW]";
 		}
-		elsif($char =~ /d/i)
-		{ $char = "[atugndwkrATUGNDWKR]";
+		elsif($char =~ /d/i) {
+			$char = "[atugndwkrATUGNDWKR]";
 		}
-		elsif($char =~ /b/i)
-		{ $char = "[ctugnbyksCTUGNBYKS]";
+		elsif($char =~ /b/i) {
+			$char = "[ctugnbyksCTUGNBYKS]";
 		}
-		elsif($char =~ /m/i)
-		{ $char = "[acmvhnACMVHN]";
+		elsif($char =~ /m/i) {
+			$char = "[acmvhnACMVHN]";
 		}
-		elsif($char =~ /k/i)
-		{ $char = "[tugdbknTUGKDBN]";
+		elsif($char =~ /k/i) {
+			$char = "[tugdbknTUGKDBN]";
 		}
-		elsif($char =~ /w/i)
-		{ $char = "[atuwhdnATUWHDN]";
+		elsif($char =~ /w/i) {
+			$char = "[atuwhdnATUWHDN]";
 		}
-		elsif($char =~ /s/i)
-		{ $char = "[cgsvbnCGSVBN]";
+		elsif($char =~ /s/i) {
+			$char = "[cgsvbnCGSVBN]";
 		}
-		elsif($char =~ /y/i)
-		{ $char = "[ctuyhbnCTUYHBN]";
+		elsif($char =~ /y/i) {
+			$char = "[ctuyhbnCTUYHBN]";
 		}
-		elsif($char =~ /r/i)
-		{ $char = "[agrvdnAGRVDN]";
+		elsif($char =~ /r/i) {
+			$char = "[agrvdnAGRVDN]";
 		}
-		else
-		{	logentry_then_die("ERROR: sequence $seq_in from metadata file contains illegal non-IUPAC base: $char.");
+		else {
+			logentry_then_die("ERROR: sequence $seq_in from metadata file contains illegal non-IUPAC base: $char.");
 		}
 		$seq_out .= $char;
 	}
@@ -310,8 +347,8 @@ sub IUPAC_RC {
 #######################################
 ### logentry
 # Enter time stamped log entry
-sub logentry
-{	my $message=shift;	# message to print
+sub logentry {
+	my $message=shift;	# message to print
 	my $level=shift;		# verbosity level.  0 always printed, 1 printed if verbosity is set. (optional, default=0)
 	$level=0 unless($level);
 	my $sep=">" x ($level + 1);
@@ -323,8 +360,8 @@ sub logentry
 #######################################
 ### logentry_then_die
 # Enter time stamped log entry
-sub logentry_then_die
-{	my $message=shift;
+sub logentry_then_die {
+	my $message=shift;
 	logentry($message,0);
 	die($message);
 }
@@ -333,10 +370,26 @@ sub logentry_then_die
 #######################################
 ### round
 # Round float ($number) to $dec digits
-sub round
-{	my $number = shift || 0;
+sub round {
+	my $number = shift || 0;
 	my $dec = 10 ** (shift || 0);
 	return int( $dec * $number + .5 * ($number <=> 0)) / $dec;
+}
+
+
+#######################################
+### stage_files
+# Stage files to a target location
+sub stage_files {
+	my $target = shift;
+	my @files=shift;
+	my @newFiles;
+	foreach my $file (@files) {
+		copy($file,$target) || logentry_then_die("ERROR: File $file could not be copied to tmpdir $target.  Ensure file exists and that tmpdir has sufficient space.");
+		my $filename=fileparse($file);
+		push(@newFiles, $filename);
+	}
+	return(@newFiles);
 }
 
 

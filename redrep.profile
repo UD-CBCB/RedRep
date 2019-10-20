@@ -19,6 +19,16 @@ SHARED_FS=1
 # PERL must be installed on the system and located or symlinked at /usr/bin/perl.
 
 
+###########################
+###  OPTIONAL SETTINGS  ###
+###########################
+# Must uncomment (remove leading #) to use
+
+# Location where temporary and staged files should be placed.  Can be overridden with --tmpdir option on RedRep programs.
+# Defaults to environment variable $TMPDIR, $TEMP, or $TMP (in that order) if they exist.  Otherwise assumes /tmp.
+#REDREP_TMPDIR=/tmp
+
+
 ########################################################################################
 ### SETTINGS BELOW CAN BE USED TO SETUP DEPENDENDIES IF NOT ALREADY IN SYSTEM PATH.  ###
 ########################################################################################
@@ -68,6 +78,7 @@ GATK_PATH=/usr/local/GATK/
 export REDREPBIN=${REDREP_INSTALL}/bin
 export REDREPLIB=${REDREP_INSTALL}/lib
 export REDREPUTIL=${REDREP_INSTALL}/util
+export REDREP_TMPDIR
 
 # ${REDREPUTIL}/check_perl_dependencies.pl
 
