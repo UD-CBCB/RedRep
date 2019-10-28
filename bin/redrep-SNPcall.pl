@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-SNPcall.pl Ver. 2.2beta [10/11/2019 rev]";
+my $ver="redrep-SNPcall.pl Ver. 2.2 [10/28/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -10,47 +10,53 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
 
 use lib $ENV{'REDREPLIB'};
-use RedRep::Utils qw(check_dependency check_jar cmd find_job_info logentry logentry_then_die);
+use RedRep::Utils;
+use RedRep::Utils qw(build_argument_list build_contig_list check_genomicsdb read_fofn read_listfile split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
 use Parallel::ForkManager;
 use Pod::Usage;
-use POSIX qw(floor);
+use POSIX qw(ceil floor);
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
+use File::Copy::Recursive qw(dircopy);
 use File::Path qw(make_path remove_tree);
+use Filesys::Df qw(df);
 use Sys::Hostname qw(hostname);
 
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$refFasta,$dcov,$dfrac,$dt,$intervals,$javaarg,$gatkarg);
-
+my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$refFasta,$dcov,$dfrac,$dt,$genomics_db,
+    $intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
 my $ncpu			=	1;
 my $mem				= 50;						#in GB
-our $verbose	= 0;
+our $verbose	= 4;
+my $javaarg="";
+my $gatkarg_HaplotypeCaller="";
 
 GetOptions (
 	"i|in=s"													=>	\$in,
 	"o|out=s"													=>	\$outDir,
 	"r|ref=s"													=>	\$refFasta,
+	"D|genomicsdb|db=s"								=>	\$genomics_db,
 	"l|log=s"													=>	\$logOut,
 
 	"t|threads|ncpu=i"								=>	\$ncpu,
 	"mem=i"														=>	\$mem,
+	"T|tmpdir=s"											=>	\$tmpdir,
+	"S|stage"													=>	\$stage,
+	"tmp_in_outdir"										=>	\$tmp_in_outdir,
 
 	"java=s"													=>	\$javaarg,
-	"gatk=s"													=>	\$gatkarg,
-	"dcov|downsample_to_coverage=i"		=>	\$dcov,
-	"dfrac|downsample_to_fraction=f"	=>	\$dfrac,
-	"dt|downsampling_type=s"					=>	\$dt,
+	"gatk_HaplotypeCaller=s"					=>	\$gatkarg_HaplotypeCaller,
 	"L|intervals=s"										=>	\$intervals,
 
 	"f|force"													=>	\$force,
-	"d|debug"													=>	\$debug,
+	"d|debug:+"												=>	\$debug,
 	"k|keep|keep_temp"								=>	\$keep,
-	"V|verbose+"											=>	\$verbose,
+	"V|verbose:+"											=>	\$verbose,
 
 	"v|ver|version"										=>	\$version,
 	"h|help"													=>	\$help,
@@ -68,13 +74,18 @@ pod2usage( -msg  => "ERROR!  Arguments -dcov and -dfrac are incompatible, chose 
 
 
 ### DEBUG MODE
-if($debug)
-{	require warnings; import warnings;
-	require Data::Dumper; import Data::Dumper;
-	require diagnostics;
+if($debug) {
+	require warnings; import warnings;
 	$keep=1;
 	$verbose=10;
+	if($debug>1) {
+		$verbose=100;
+		require Data::Dumper; import Data::Dumper;
+		require diagnostics; import diagnostics;
+	}
+	$tmp_in_outdir=1 if($debug>2);
 }
+
 
 
 ### SET DEFAULT METHOD OF FILE PROPAGATION
@@ -100,75 +111,90 @@ if(-d $outDir)
 }
 
 
+### CREATE OUTPUT DIR AND OPEN LOG
+mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
+$logOut="$outDir/log.SNPcall.txt" if (! $logOut);
+open(our $LOG,">",$logOut);
+logentry("SCRIPT STARTED ($ver)",2);
+
+
 ### OUTPUT FILE LOCATIONS
-my $intermed="$outDir/intermed";
-my $gvcf_dir=$outDir."/gvcf";
+$tmpdir								=	get_tmpdir($tmpdir);
+my $intermed					=	"$tmpdir/intermed";
+$intermed							=	"$outDir/intermed" if($tmp_in_outdir);
+my $gvcf_dir					=	$outDir."/gvcf";
+my $stage_dir					=	$tmpdir."input/";
+my $contig_list				= $intermed."/contig.list";
 
-### CREATE OUTPUT DIR
-mkdir($outDir);
-mkdir($outDir."/intermed");
+mkdir($intermed);
 mkdir($gvcf_dir);
+mkdir($stage_dir);
 
-my(@files);
-if(-d $in)
-{	opendir(DIR,$in);
-	@files=grep /\.bam$/, readdir(DIR);
-	close(DIR);
-	s/^/$in\// for @files;  #prepend $in (dirpath) to each element
+
+### FIND FILES
+my @files=split_in_files($in, qr/\.bam$/);
+logentry("BAM FILES DETECTED: ".scalar(@files),3);
+my @bai_files;
+
+
+### STAGE Files
+if($stage) {
+	logentry("STAGING FILES TO $tmpdir",3);
+
+	# bai not found are built later on tmpdir (in case of write permission issues?)
+
+	foreach my $file (@files) {
+		if(-e "$file.bai" && -f "$file.bai") {
+			push(@bai_files,"$file.bai");
+		}
+	}
+
+	@files=stage_files($stage_dir,\@files);
+	logentry(scalar(@files)." input bam files staged to $stage_dir",4);
+
+	@bai_files=stage_files($stage_dir,\@bai_files);
+	logentry(scalar(@bai_files)." input bam index files staged to $stage_dir",4);
+
 }
-elsif (-f $in)
-{	push(@files,$in);
-}
-else
-{	pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) file not found.\n", -exitval => 2) if (! $in);
-}
+
+### INITIATE LOG
+logentry("Command: $0 $script\n",2);
+logentry("Executing on ".hostname."\n",2);
+logentry(find_job_info(),2);
+logentry("Output directory $outDir (" . (df("$outDir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Temporary directory $tmpdir (" . (df("$tmpdir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Log verbosity: $verbose\n",2) if($verbose && $verbose>0);
+logentry("Running in Debug Mode $debug\n",2) if($debug && $debug>0);
+logentry("Keeping intermediate files.  WARNING: Can consume significant extra disk space\n",2) if($keep && $keep>0);
 
 
-### CREATE LOG FILES
-$logOut="$outDir/log.SNP.txt" if (! $logOut);
-open(our $LOG, "> $logOut");
-logentry("SCRIPT STARTED ($ver)",0);
-print $LOG "Command: $0 $script\n";
-print $LOG "Executing on ".hostname."\n";
-print $LOG find_job_info();
-print $LOG "Running in Debug Mode\n" if($debug && $debug>0);
-print $LOG "Keeping intermediate files.  WARNING: Can consume significant extra disk space\n" if($keep && $keep>0);
-print $LOG "Log verbosity level: $verbose\n" if($verbose && $verbose>0);
-
-
-### REDREP BIN/SCRIPT LOCATIONS
 ### REDREP BIN/SCRIPT LOCATIONS
 my $execDir=$ENV{'REDREPBIN'};
 my $utilDir=$ENV{'REDREPUTIL'};
 my $libDir=$ENV{'REDREPLIB'};
-print $LOG "RedRep Bin: $execDir\n";
-print $LOG "RedRep Utilities: $utilDir\n";
-print $LOG "RedRep Libraries: $libDir\n";
+logentry("RedRep Bin: $execDir\n",2);
+logentry("RedRep Utilities: $utilDir\n",2);
+logentry("RedRep Libraries: $libDir\n",2);
 
 
 ### CHECK FOR AND SETUP EXTERNAL DEPENDENCIES
-logentry("Checking External Dependencies",0);
+logentry("Checking External Dependencies",3);
 
 	# java
 	#our $java=check_dependency("java","-version","s/\r?\n/ | /g");    #not currently needed; retain for future
 	my $java_opts = "-Xmx${mem}g $javaarg -d64";
 
 	# samtools
-	my $samtools=check_dependency("samtools","--version","s/\r?\n/ | /g");
-
-#	#picard
-#	#picard
-#	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
-#	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
+	my $samtools = get_path_samtools(1);
 
 	#GATK
-	#	my $GATK=check_jar("GATK",$ENV{'GATKJAR'},"--version","s/\r?\n/ | /g","Environment Variable GATKJAR is not defined or is a not pointing to a valid jar file!  Please define valid GATK jar file location with command: export GATKJAR='PATH_TO_GATK_JAR");
-	my $gatk  = check_dependency("gatk","--version 2>&1 | tail -n +4","s/\r?\n/ | /g");
+	my $gatk  = get_path_gatk(1);
 	$gatk .= qq( --java-options "$java_opts");
 
 
 ### OUTPUT FILE LOCATIONS
-	my $gvcf_fofn_out="$outDir/gvcf.fofn";
+	my $gvcf_fofn_out			=	"$outDir/gvcf.fofn.list";
+	my $contig_list				= $tmpdir."/contig.list";
 
 
 ############
@@ -177,53 +203,73 @@ logentry("Checking External Dependencies",0);
 	# ref Fasta stub
 	my $stub2=fileparse($refFasta, qr/\.[^.]*$/);
 
-	if(! -e $refFasta.".fai")
-	{	logentry("REFERENCE FASTA INDEX NOT FOUND: BUILDING",0);
-		$sys=cmd("$samtools faidx $refFasta","Building reference index");
-	}
-	if(! -e $stub2.".dict")
-	{	logentry("REFERENCE DICTIONARY NOT FOUND: BUILDING",0);
-		$sys=cmd("$gatk CreateSequenceDictionary --REFERENCE $refFasta --OUTPUT $stub2.dict","Building reference dictionary");
-	}
+	## CHECK AND BUILD FASTA INDEX AND DICTIONARY
+	check_ref_fasta($refFasta);
+	build_contig_list($refFasta,$contig_list);
 
-	my $bam_files=join(" -I ",@files);
-	my $GATKargs.="-dcov $dcov " if($dcov);
-	$GATKargs.="-dfrac $dfrac " if($dfrac);
-	$GATKargs.="-dt $dt " if($dt);
-	if($intervals)
-	{	my @intervals=split(/,/,$intervals);
-		foreach my $interval (@intervals)
-		{	$GATKargs.="-L $interval "
+	## BAM CHECK AND BUILD INDEXES
+	foreach my $file (@files) {
+		unless(-e "$file.bai" && -f "$file.bai") {
+			logentry("BAM Index not found for $file",3);
+			logentry("BUILDING BAM INDEX $file.bai",4);
+			$sys=cmd("$samtools index $file","Calling samtools to building BAM index");
+			push(@bai_files,"$file.bai");
 		}
 	}
 
-	$GATKargs.="-intervals $dfrac " if($dfrac);
-	$GATKargs.="$gatkarg " if($gatkarg);
-  logentry("GATK VARIANT CALLING: ERC GVCF SINGLE-SAMPLE DISCOVERY MODE",0);
 
-	open(FOFN,"> $gvcf_fofn_out");
+	#my $bam_files=build_argument_list(@files,"--input");
+	my $interval_args="";
+	my @intervals;
+	if($intervals) {
+		if($intervals=~/.list$/ && -e $intervals && -f $intervals) {
+			@intervals=read_listfile($intervals);
+		}
+		else {
+			@intervals=split(/,/,$intervals);
+		}
+		$interval_args=build_argument_list(\@intervals,"--intervals");
+	}
+
+  logentry("GATK VARIANT CALLING: ERC GVCF SINGLE-SAMPLE DISCOVERY MODE",3);
+
+	open(FOFN,">",$gvcf_fofn_out);
 	foreach my $file (@files)
 	{	$manager->start and next;
-		logentry("BEGIN PROCESSING FILE $file",0);
+		logentry("BEGIN PROCESSING FILE $file",4);
 		my $stub=fileparse($file, qr/\.[^.]*(\.gz)?$/);
-		$sys=cmd("$gatk HaplotypeCaller -R $refFasta -ERC GVCF -I $file -O $gvcf_dir/$stub.g.vcf --genotyping-mode DISCOVERY $GATKargs --native-pair-hmm-threads $hmm_threads -RF GoodCigarReadFilter","Run HaplotypeCaller on ${file}");
-		print FOFN "$outDir/$stub.g.vcf\n";
-		logentry("FINISH PROCESSING FILE $file",0);
+		my $outFile="$gvcf_dir/$stub.g.vcf";
+		$sys=cmd("$gatk HaplotypeCaller --input $file --output $outFile --reference $refFasta -ERC GVCF --native-pair-hmm-threads $hmm_threads -RF GoodCigarReadFilter $interval_args $gatkarg_HaplotypeCaller","Run HaplotypeCaller on ${file}");
+		print FOFN "$outFile\n";
+		if(-e $outFile && -f $outFile) {
+			logentry("FINISH PROCESSING FILE $file",4);
+		}
+		else {
+			logentry("No g.vcf file created for input $file.  Continuing analysis.",1);
+		}
 		$manager->finish;
 	}
 	$manager->wait_all_children;
 	close(FOFN);
+	my @gvcfs=read_fofn($gvcf_fofn_out);
+	my $gvcf_count=scalar(@gvcfs);
+	logentry("COMPLETED SNP CALLING: ".$gvcf_count." g.vcf files created.",3);
 
-	# FILE CLEAN UP
-	logentry("FILE CLEAN UP",0);
-	if(! $keep)
-	{	logentry("Remove intermediate file directory",0);
-		$sys=remove_tree($intermed);
+
+	### FILE CLEAN UP
+	logentry("FILE CLEAN UP",3);
+	if($keep && ! $tmp_in_outdir) {
+		logentry("Saving intermediate tmp directory",4);
+		$sys=dircopy($intermed, "$outDir/intermed");
 	}
+	logentry("Removing tmp files",4);
+	$sys=remove_tree($tmpdir);
 
 
-logentry("SCRIPT COMPLETE",0);
-close($LOG);
+	### WRAP UP
+	logentry("SCRIPT COMPLETE",2);
+	logentry("TOTAL EXECUTION TIME: ".script_time(),2);
+	close($LOG);
 
 exit 0;
 
@@ -232,8 +278,14 @@ exit 0;
 ############### SUBS ##################
 
 
+
+
+
 __END__
 
+
+#######################################
+########### DOCUMENTATION #############
 =pod
 
 =head1 NAME
@@ -250,11 +302,21 @@ Accepts bam output from redrep-refmap.pl and fasta-formatted reference sequence(
 
 =head1 OPTIONS
 
+=head2 REQUIRED PARAMETERS
+
 =over 3
 
-=item B<-1, -i, --in, --in1>=FILENAME
+=item B<-i, --in>=FILENAME
 
-Input file in sorted bam format with index or directory of such files. (Required)
+Input bam file(s).  (Required)
+
+Can be one of the folllowing formats:
+
+1. Path to one or more bam files (comma separated; must have ".bam" extension)
+2. Path to one or more FOFN files (file with complete paths to one or more bam files -- 1 per line; must have ".fofn.list" extension)
+3. Path to one or more directories of bam files (comma separated)
+4. Path to one or more FODN files (file with complete paths to directories containing one or more bam files -- 1 directory per line; must have ".fodn.list" extension)
+5. Comma separated list of any combination of 1-4.
 
 =item B<-o, --out>=DIRECTORY_NAME
 
@@ -262,11 +324,25 @@ Output directory. (Required)
 
 =item B<-r, --ref>=FILENAME
 
-Reference FASTA with index and dict files. (Required)
+Reference FASTA file. (Required)
 
-=item B<-l, --log>=FILENAME
+=back
 
-Log file output path. [ Default output-dir/log.snp.txt ]
+=head2 OPTIONAL PARAMETERS
+
+=head3 Program Specific Parameters
+
+=over 3
+
+=item B<-L, --intervals>=string
+
+Genomic intervals to SNP call.  May consist of one or more ranges separated by a comma (e.g. -L chr1:1-100,chr2:34-500,chr3) or a list file contining 1 interval per line (must have .list extension).  (default: range of the entire reference sequence is anlayzed)
+
+=back
+
+=head3 Program Behavior and Resource Control
+
+=over 3
 
 =item B<-f, --force>
 
@@ -276,46 +352,41 @@ If output directory exists, force overwrite of previous directory contents.
 
 Retain temporary intermediate files.
 
+=item B<--mem>=integer
+
+Max RAM usage for GATK Java Virtual Machine and some other software components in GB.  Does not necessarily guarantee maximum RAM usage (default 50)
+
+=item B<-S, --stage>
+
+When specified, input files will be staged to the tmpdir.  Can increase performance on clusters and other situations where the output directory is on network attached or cloud storage.
+
 =item B<-t, --threads>=integer
 
 Number of cpu's to use for threadable operations.
 
-=item B<--mem>=integer
+=item B<-T, --tmpdir>
 
-Max RAM usage for GATK Java Virtual Machine in GB (default 50)
+Set directory (local directory recommended) for fast temporary and staged file operations.  Defaults to system environment variable REDREP_TMPDIR, TMPDIR, TEMP, or TMP in that order (if they exist).  Otherwise assumes /tmp.
 
-=item B<-dcov, --downsample_to_coverage>=integer
+=back
 
-Passes argument of same name to GATK SNP caller.  See also -dfrac, -dt.  GATK description:
+=head3 Logging Parameters
 
-Coverage [integer] to downsample to. For locus-based traversals (eg., LocusWalkers and ActiveRegionWalkers),this controls the maximum depth of coverage at each locus. For non-locus-based traversals (eg., ReadWalkers), this controls the maximum number of reads sharing the same alignment start position. Note that this downsampling option does NOT produce an unbiased random sampling from all available reads at each locus: instead, the primary goal of the to-coverage downsampler is to maintain an even representation of reads from all alignment start positions when removing excess coverage. For a true across-the-board unbiased random sampling of reads, use -dfrac instead. Also note that the coverage target is an approximate goal that is not guaranteed to be met exactly: the downsampling algorithm will under some circumstances retain slightly more coverage than requested.
+=over 3
 
-=item B<-dfrac, --downsample_to_fraction>=integer
+=item B<-l, --log>=FILENAME
 
-Passes argument of same name to GATK SNP caller.  See also -dcov, -dt.  GATK description:
+Log file output path. [ Default output-dir/log.snp.txt ]
 
-Fraction [0.0-1.0] of reads to downsample to.
+=item B<-V, --verbose>[=integer]
 
-=item B<-dt, --downsampling_type>=NONE, ALL_READS, BY_SAMPLE
+Produce detailed log.  Can be involed multiple times for additional detail levels or level can be specified. 0: ERROR, 1: WARNINGS, 2: INFO, 3-6: STATUS LEVELS, 7+:DEBUGGING INFO (default=4)
 
-Passes argument of same name to GATK SNP caller.  See also -dcov, -dfrac.  GATK description:
+=back
 
-Type of reads downsampling to employ at a given locus. Reads will be selected randomly to be removed from the pile based on the method described here.
+=head3 Help
 
-=item B<-L, --intervals>=string
-
-Passes argument of same name to GATK SNP caller.  May consist of one or more ranges separated by a comma. (EXAMPLE: -L chr1:1-100,chr2:34-500,chr3).  GATK description:
-
-Use this option to perform the analysis over only part of the genome. You can use samtools-style intervals either explicitly on the command line (e.g. -L chr1 or -L chr1:100-200) or by loading in a file containing a list of intervals (e.g. -L myFile.intervals). Additionally, you can also specify a ROD file (such as a VCF file) in order to perform the analysis at specific positions based on the records present in the file (e.g. -L file.vcf). Finally, you can also use this to perform the analysis on the reads that are completely unmapped in the BAM file (i.e. those without a reference contig) by specifying -L unmapped.
-
-=item B<-V, --verbose>
-
-Produce detailed log.  Can be involed multiple times for additional detail levels.
-
-
-=item B<-v, --ver, --version>
-
-Displays the current version.
+=over 3
 
 =item B<-h, --help>
 
@@ -324,6 +395,10 @@ Displays the usage message.
 =item B<-m, --man, --manual>
 
 Displays full manual.
+
+=item B<-v, --ver, --version>
+
+Displays the current version.
 
 =back
 
@@ -349,7 +424,9 @@ Displays full manual.
 
 =item 2.1 - 1/26/2017: added GATK haplotyper w/ ERC GVCF support, g.vcf workflow, RedRep::Utils library support, code cleanup
 
-=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.
+=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.  Last version suppporting GATK v3.x.
+
+=item 2.2 = 10/28/2019: Added GATK v4 compatibility.  Many other enhancements including parallelization, documentation, and logging.
 
 =back
 
@@ -407,9 +484,7 @@ Displays full manual.
 
 =over 3
 
-=item GATK (tested with version 3.8-0); Location defined by `env GATKJARS`
-
-=item picard-tools (tested with version 2.19.0 SNAPSHOT); Location defined by `env PICARDJAR`
+=item GATK (tested with version 4.1.4.0)
 
 =back
 

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-cluster.pl Ver. 2.11 (10/9/2019 rev)";
+my $ver="redrep-cluster.pl Ver. 2.2 [10/28/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -10,20 +10,23 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
 
 use lib $ENV{'REDREPLIB'};
-use RedRep::Utils qw(check_dependency cmd find_job_info logentry logentry_then_die);
+use RedRep::Utils;
+#use RedRep::Utils qw();
 use Getopt::Long qw(:config no_ignore_case);
 use Pod::Usage;
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
+use File::Copy::Recursive qw(dircopy);
 use File::Path qw(make_path remove_tree);
 use File::Which qw(which);
+use Filesys::Df qw(df);
 use Sys::Hostname qw(hostname);
 
 sub binClass;
 sub centroid_rename;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$inFile,$inFile2,$outDir,$help,$manual,$force,$keep,$version,$hist_stats);
+my($debug,$inFile,$inFile2,$outDir,$help,$manual,$force,$keep,$version,$hist_stats,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed);
 
 
 ### ARGUMENTS WITH DEFAULT
@@ -41,7 +44,7 @@ my $lenBinStart	=	81;
 my $lenBinSize 	= 5;
 my $lenBinNum		=	4;
 my $lenBinEnd		= 999;				# hard-coded max
-our $verbose		= 0;
+our $verbose		= 4;
 
 
 GetOptions (
@@ -51,9 +54,9 @@ GetOptions (
 	"l|log=s"							=>	\$logOut,
 
 	"f|force"							=>	\$force,
-	"d|debug"							=>	\$debug,
+	"d|debug:+"						=>	\$debug,
 	"k|keep|keep_temp"		=>	\$keep,
-	"V|verbose+"					=>	\$verbose,
+	"V|verbose:+"					=>	\$verbose,
 
 	"c|p|id=s"						=>	\$id,
 	"n|minlen=i"					=>	\$minlen,
@@ -69,6 +72,9 @@ GetOptions (
 	"len_bin_width=i"			=>	\$lenBinSize,
 
 	"t|threads|ncpu=i"		=>	\$ncpu,
+	"T|tmpdir=s"					=>	\$tmpdir,
+	"S|stage"							=>	\$stage,
+	"tmp_in_outdir"				=>	\$tmp_in_outdir,
 
 	"v|ver|version"				=>	\$version,
 	"h|help"							=>	\$help,
@@ -84,12 +90,16 @@ pod2usage( -msg  => "ERROR!  Required argument -o (output directory) not found.\
 
 
 ### DEBUG MODE
-if($debug)
-{	require warnings; import warnings;
-	require diagnostics; import diagnostics;
-	require Data::Dumper; import Data::Dumper;
+if($debug) {
+	require warnings; import warnings;
 	$keep=1;
 	$verbose=10;
+	if($debug>1) {
+		$verbose=100;
+		require Data::Dumper; import Data::Dumper;
+		require diagnostics; import diagnostics;
+	}
+	$tmp_in_outdir=1 if($debug>2);
 }
 
 
@@ -121,38 +131,47 @@ if(-d $outDir)
 }
 
 
-### CREATE OUTPUT DIR
-mkdir($outDir);
-mkdir($outDir."/intermed");
-
-
-### CREATE LOG FILES
+### CREATE OUTPUT DIR AND OPEN LOG
+mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
 $logOut="$outDir/log.cluster.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
-logentry("SCRIPT STARTED ($ver)",0);
-print $LOG "Command: $0 $script\n";
-print $LOG "Executing on ".hostname."\n";
-print $LOG find_job_info();
-print $LOG "Running in Debug Mode\n" if($debug && $debug>0);
-print $LOG "Keeping intermediate files.  WARNING: Can consume significant extra disk space\n" if($keep && $keep>0);
-print $LOG "Log verbosity level: $verbose\n" if($verbose && $verbose>0);
+logentry("SCRIPT STARTED ($ver)",2);
 
 
-### TEMPORARILY DISABLE HISTSTATS
-if($hist_stats==1) {
-	print "hist_stats function temporarily disabled in this version.  Will be reimplemented in future.\n";
-	print $LOG "hist_stats function temporarily disabled in this version.  Will be reimplemented in future.\n";
-	$hist_stats=0;
-}
+### OUTPUT FILE LOCATIONS
+$tmpdir								=	get_tmpdir($tmpdir);
+my $intermed					=	"$tmpdir/intermed";
+$intermed							=	"$outDir/intermed" if($tmp_in_outdir);
+
+mkdir($intermed);
+
+
+### INITIATE LOG
+logentry("Command: $0 $script\n",2);
+logentry("Executing on ".hostname."\n",2);
+logentry(find_job_info(),2);
+logentry("Output directory $outDir (" . (df("$outDir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Temporary directory $tmpdir (" . (df("$tmpdir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Log verbosity: $verbose\n",2) if($verbose && $verbose>0);
+logentry("Running in Debug Mode $debug\n",2) if($debug && $debug>0);
+logentry("Keeping intermediate files.  WARNING: Can consume significant extra disk space\n",2) if($keep && $keep>0);
 
 
 ### REDREP BIN/SCRIPT LOCATIONS
 my $execDir=$ENV{'REDREPBIN'};
 my $utilDir=$ENV{'REDREPUTIL'};
 my $libDir=$ENV{'REDREPLIB'};
-print $LOG "RedRep Bin: $execDir\n";
-print $LOG "RedRep Utilities: $utilDir\n";
-print $LOG "RedRep Libraries: $libDir\n";
+logentry("RedRep Bin: $execDir\n",2);
+logentry("RedRep Utilities: $utilDir\n",2);
+logentry("RedRep Libraries: $libDir\n",2);
+
+
+### TEMPORARILY DISABLE HISTSTATS
+if($hist_stats==1) {
+	print "hist_stats function temporarily disabled in this version.  Will be reimplemented in future.\n";
+	logentry("hist_stats function temporarily disabled in this version.  Will be reimplemented in future.\n",1);
+	$hist_stats=0;
+}
 
 
 ### BIN/SCRIPT LOCATIONS
@@ -168,16 +187,15 @@ my $plot_len1_pl=which "plot_len1.pl";
 
 
 ### CHECK FOR EXTERNAL DEPENDENCIES
-logentry("Checking External Dependencies",0);
+logentry("Checking External Dependencies",3);
 
-my $usearch=check_dependency("usearch","--version","s/\r?\n/ | /g");
-my $uclust=check_dependency("uclust","--version","s/\r?\n/ | /g");
+my $usearch=check_dependency("usearch","--version","s/\r?\n/ | /g",1);
+my $uclust=check_dependency("uclust","--version","s/\r?\n/ | /g",1);
 my $clstr_sort_by_pl=check_dependency("$clstr_sort_by_pl");
 my $clstr_sort_prot_by_pl=check_dependency("$clstr_sort_prot_by_pl");
 my $usearch5=$uclust;
 
 ### OUTPUT FILE LOCATIONS
-my $intermed="$outDir/intermed";
 my $fq_sorted="$intermed/$stub.sort.fastq";
 my $fasta_sorted="$intermed/$stub.sort.fasta";
 my $fasta_header="$intermed/$stub.sort.header.txt";
@@ -200,12 +218,12 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 ############
 ### MAIN
 
-
-	logentry("SORT FASTQ FILE",0);
+	logentry("PREPARE INPUT FILES",3);
+	logentry("SORT FASTQ FILE",4);
 	$sys=cmd("$sort_fastq_sh $inFile $fq_sorted $minlen $minqual","Sort fastq file");
-	logentry("CONVERT FASTQ TO FASTA FORMAT",0);
+	logentry("CONVERT FASTQ TO FASTA FORMAT",4);
 	$sys=cmd("$fastq2fasta_pl $fq_sorted > $fasta_sorted","Convert fastq to fasta");
-	logentry("ABBREVIATE FASTA FILE",0);
+	logentry("ABBREVIATE FASTA FILE",4);
 	$sys=cmd("$fasta_abbrev_pl $fasta_sorted $fasta_sorted_abbrev $fasta_header","Abbreviate fasta headers");
 
 	# Split Fasta File if larger than 4GB
@@ -215,6 +233,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	my $lowerlim=$upperlim*0.99;					# minimum threshold of file size to trigger next split
 	my $sizeinout="-sizein -sizeout";     # value to use if file doesn't need to split . . . variable may be depracated as sizein is always included now from fasta_abbrev
 
+	logentry("BEGIN CLUSTERING",3);
 	if($filesize > $upperlim)
 	{	#Abbrev fasta will always have an abbreviated header and 1 line sequence due to fasta-abbrev.pl processing
 		open(DAT,"$fasta_sorted_abbrev");
@@ -222,7 +241,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 		my $slicesize;
 		$sys=cmd("mkdir $splitDir$it","Make split $it directory");
 		$slice="$splitDir$it/$it.fasta";
-		logentry("PRODUCING FASTA SPLIT $it",0);
+		logentry("PRODUCING FASTA SPLIT $it",4);
 		open(SUB, ">$slice");
 		while(<DAT>)
 		{	$slicesize+=length($_);
@@ -232,7 +251,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 			print SUB $tmp;
 			if($slicesize>$lowerlim)
 			{	close(SUB);
-				logentry("RUNNING UCLUST SPLIT $it",0);
+				logentry("RUNNING UCLUST SPLIT $it",4);
 				$sizeinout="-sizein -sizeout";  # may be depracated . . . all lines will have sizein due to fasta_abbrev
 				$sys=cmd("$usearch --cluster_smallmem $slice --leftjust $sizeinout --id $id --centroids $splitDir$it/$it.centroid --uc $splitDir$it/$it.uc --log $splitDir$it/uclust_$it.log --sortedby 'other'","UCLUST FASTA SPLIT $slice");
 				$slice="$splitDir$it/$it.centroid";
@@ -240,7 +259,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 				$sys=cmd("mkdir $splitDir$it","Make split $it directory");
 				$sys=cmd("cp $slice $splitDir$it/$it.fasta","Roll over slice input");
 				$slice="$splitDir$it/$it.fasta";
-				logentry("PRODUCING FASTA SPLIT $it",0);
+				logentry("PRODUCING FASTA SPLIT $it",4);
 				open(SUB, ">>$slice");
 				$slicesize=-s $slice;      #record size of output file and use as base size for next slice
 				pod2usage( -msg  => "Size of input file exceeds capability of 32-bit usearch.\n", -exitval => 2) if ($slicesize>$lowerlim);
@@ -250,7 +269,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	}
 
 	# UCLUST IF SMALLER THAN 4GB OR FINAL SPLIT
-	logentry("RUNNING UCLUST FINAL",0);
+	logentry("RUNNING UCLUST FINAL",4);
 	$sys=cmd("$usearch --cluster_smallmem ${slice} --leftjust $sizeinout --id $id --centroids $uc_centroid --uc $uc_uc --log $outDir/uclust_final.log --sortedby 'other'","UCLUST FINAL RUN: $slice");
 	$sys=cmd("$usearch --sortbysize $uc_centroid --fastaout $uc_centroid_filter --minsize $minsize","UCLUST CENTROID FILTER FINAL RUN: $slice") if($minsize>1);
 
@@ -260,18 +279,18 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 
 
 	if($hist_stats)
-	{
+	{	logentry("PREPARE STATS",3);
 		##### THIS BLOCK USED TO BE BEFORE IF
 		$sys=cmd("$usearch5 --uc2fasta $uc_uc_seeds --input $fasta_sorted_abbrev --output $uc_seeds","Make seeds fasta file");
 
 		# CONVERT UC TO CLSTR
-		logentry("CONVERT UC FILE TO CLSTR FORMAT",0);
+		logentry("CONVERT UC FILE TO CLSTR FORMAT",4);
 		$sys=cmd("$usearch5 --uc2clstr $uc_uc --output $uc_clstr","Convert uc to clstr format");
 
 		# SORT CLUSTERS
-		logentry("SORT CLUSTERS BY SIZE",0);
+		logentry("SORT CLUSTERS BY SIZE",4);
 		$sys=cmd("$clstr_sort_by_pl $uc_clstr no > $uc_clstr.tmp","Sort clusters by size");
-		logentry("SORT CLUSTERS BY SEED LENGTH",0);
+		logentry("SORT CLUSTERS BY SEED LENGTH",3);
 		$sys=cmd("$clstr_sort_prot_by_pl len $uc_clstr.tmp > $uc_clstr.sort","Sort clusters by sequence length");
 
     ##### END BLOCK
@@ -301,34 +320,44 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 		}
 
 		# RUN HISTOGRAM STATS
-		logentry("RUN HISTOGRAM (CLUSTER SIZE/LENGTH) STATS",0);
+		logentry("RUN HISTOGRAM (CLUSTER SIZE/LENGTH) STATS",4);
 		$sys=cmd("$plot_len1_pl $uc_clstr.sort \\$sizeBinStr \\$lenBinStr > $uc_hist_stats","Run Cluster Stats (Histogram)");
 	}
 	else
-	{	logentry("SKIPPING HISTOGRAM (CLUSTER SIZE/LENGTH) STATS",0);
+	{	logentry("SKIPPING HISTOGRAM (CLUSTER SIZE/LENGTH) STATS",2);
 	}
 
 #	# PARSE CLUSTER COUNTS
-#	logentry("PARSE CLUSTER COUNTS",0);
+#	logentry("PARSE CLUSTER COUNTS",3);
 #	$sys=cmd("$CDHitClustComp_pl $uc_clstr $uc_cluster_freq","Parse Cluster Counts");
 
 	# PRODUCE CLEAN CENTROID FILE (size= attributes removed)
-	logentry("CLEANING CENTROID OUTPUT FILES",0);
+	logentry("CLEANING CENTROID OUTPUT FILES",3);
 	centroid_rename($uc_centroid, $uc_centroid_ren);
 	centroid_rename($uc_centroid_filter, $uc_centroid_filter_ren) if(-e $uc_centroid_filter);
 
-	# FILE CLEAN UP
-	logentry("FILE CLEAN UP",0);
+
+	### FILE CLEAN UP
+	logentry("FILE CLEAN UP",3);
 #	$sys=&$mv($uc_clstr.sort,$outDir);
 	$sys=&$mv($uc_centroid_ren,$outDir);
 	$sys=&$mv($uc_centroid_filter_ren,$outDir) if(-e $uc_centroid_filter);
-	if(! $keep)
-	{	$sys=remove_tree($intermed);
+
+
+	### STANDARD FILE CLEAN UP
+	if($keep && ! $tmp_in_outdir) {
+		logentry("Saving intermediate tmp directory",4);
+		$sys=dircopy($intermed, "$outDir/intermed");
 	}
+	logentry("Removing tmp files",4);
+	$sys=remove_tree($tmpdir);
 
 
-logentry("SCRIPT COMPLETE",0);
-close($LOG);
+	### WRAP UP
+	logentry("SCRIPT COMPLETE",2);
+	logentry("TOTAL EXECUTION TIME: ".script_time(),2);
+	close($LOG);
+
 
 exit 0;
 
@@ -373,6 +402,9 @@ sub centroid_rename
 
 __END__
 
+
+#######################################
+########### DOCUMENTATION #############
 =pod
 
 =head1 NAME
@@ -389,6 +421,8 @@ Accepts fastq output from redrep-qc.pl and performs clustering of reduced repres
 
 =head1 OPTIONS
 
+=head2 REQUIRED PARAMETERS
+
 =over 3
 
 =item B<-1, -i, --in, --in1>=FILENAME
@@ -399,17 +433,15 @@ Input file (single file or first read) in fastq format. (Required)
 
 Output directory. (Required)
 
-=item B<-l, --log>=FILENAME
+=back
 
-Log file output path. [ Default output-dir/log.cluster.txt ]
+=head2 OPTIONAL PARAMETERS
 
-=item B<-f, --force>
+=head3 Program Specific Parameters
 
-If output directory exists, force overwrite of previous directory contents.
+=head4 General Clustering Parameters
 
-=item B<-k, --keep>
-
-Retain temporary intermediate files.
+=over 3
 
 =item B<-c, -p, --id>
 
@@ -426,6 +458,12 @@ Minimum quality for a cluster seed sequence (Default=20)
 =item B<--minsize>
 
 Minimum cluster size
+
+=back
+
+=head4 Histogram Statistics Parameters
+
+=over 3
 
 =item B<--hist_stats>
 
@@ -455,13 +493,47 @@ Number of histogram bins for cluster seed length statistics (default=4)  [hist_s
 
 Width of histogram bins for cluster seed length statistics (default=5)  [hist_stats Function Temporarily Disabled in this Version]
 
-=item B<-V, --verbose>
+=back
 
-Produce detailed log.  Can be invoked multiple times for additional detail levels.
+=head3 Program Behavior and Resource Control
 
-=item B<-v, --ver, --version>
+=over 3
 
-Displays the current version.
+=item B<-f, --force>
+
+If output directory exists, force overwrite of previous directory contents.
+
+=item B<-k, --keep>
+
+Retain temporary intermediate files.
+
+=item B<-S, --stage>
+
+When specified, input files will be staged to the tmpdir.  Can increase performance on clusters and other situations where the output directory is on network attached or cloud storage.
+
+=item B<-T, --tmpdir>
+
+Set directory (local directory recommended) for fast temporary and staged file operations.  Defaults to system environment variable REDREP_TMPDIR, TMPDIR, TEMP, or TMP in that order (if they exist).  Otherwise assumes /tmp.
+
+=back
+
+=head3 Logging Parameters
+
+=over 3
+
+=item B<-l, --log>=FILENAME
+
+Log file output path. [ Default output-dir/log.cluster.txt ]
+
+=item B<-V, --verbose>[=integer]
+
+Produce detailed log.  Can be involed multiple times for additional detail levels or level can be specified. 0: ERROR, 1: WARNINGS, 2: INFO, 3-6: STATUS LEVELS, 7+:DEBUGGING INFO (default=4)
+
+=back
+
+=head3 Help
+
+=over 3
 
 =item B<-h, --help>
 
@@ -470,6 +542,10 @@ Displays the usage message.
 =item B<-m, --man, --manual>
 
 Displays full manual.
+
+=item B<-v, --ver, --version>
+
+Displays the current version.
 
 =back
 
@@ -493,47 +569,13 @@ Displays full manual.
 
 =item 2.1 = 2/1/2017: Major code cleanup including minimizing OS dependencies
 
-=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.  Added -sorted_by to usearch commands to be compatible with recent versions.
+=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.  Added -sorted_by to usearch commands to be compatible with recent versions.  Last version with GATK 3.x compatibility.
+
+=item 2.2 - 10/28/2019: Many enhancements including parallelization, documentation, and logging.
 
 =back
 
 =head1 DEPENDENCIES
-
-=head2 Requires the following Perl Modules:
-
-=head3 Non-Core (Not installed by default in some installations of Perl)
-
-=over 3
-
-=item File::Which
-
-=item Parallel::ForkManager
-
-=back
-
-=head3 Core Modules (Installed by default in most Perl installations)
-
-=over 3
-
-=item strict
-
-=item Exporter
-
-=item File::Basename
-
-=item File::Copy
-
-=item File::Path
-
-=item Getopt::Long
-
-=item Pod::Usage
-
-=item POSIX
-
-=item Sys::Hostname
-
-=back
 
 =head2 Requires the following external programs be in the system PATH:
 

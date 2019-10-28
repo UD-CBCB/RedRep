@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-refmap.pl Ver. 2.2beta [10/11/2019 rev]";
+my $ver="redrep-refmap.pl Ver. 2.2 [10/28/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -10,17 +10,20 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
 
 use lib $ENV{'REDREPLIB'};
-use RedRep::Utils qw(check_dependency cmd cmd_STDOUT find_job_info logentry logentry_then_die);
+use RedRep::Utils;
+use RedRep::Utils qw(cmd_STDOUT split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
+use File::Copy::Recursive qw(dircopy);
 use File::Path qw(make_path remove_tree);
+use Filesys::Df qw(df);
 use Pod::Usage;
 use Sys::Hostname qw(hostname);
 
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$diff,$refFasta,$pe,$javaarg);
+my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$diff,$refFasta,$pe,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -28,9 +31,9 @@ my $ncpu			=	1;
 my $diff			= 0.04;
 my $stop			= 100;
 my $gap				= 1;
-my $mem				= 2;						#in GB
-our $verbose	= 0;
-
+my $mem				= 5;						#in GB
+our $verbose	= 4;
+my $javaarg="";
 
 GetOptions (
 	"i|in=s"							=>	\$in,
@@ -46,9 +49,12 @@ GetOptions (
 	"java=s"							=>	\$javaarg,
 
 	"f|force"							=>	\$force,
-	"d|debug"							=>	\$debug,
+	"d|debug:+"						=>	\$debug,
 	"k|keep|keep_temp"		=>	\$keep,
-	"V|verbose+"					=>	\$verbose,
+	"V|verbose:+"					=>	\$verbose,
+	"T|tmpdir=s"					=>	\$tmpdir,
+	"S|stage"							=>	\$stage,
+	"tmp_in_outdir"				=>	\$tmp_in_outdir,
 
 	"t|threads|ncpu=i"		=>	\$ncpu,
 	"mem=i"								=>	\$mem,
@@ -66,12 +72,16 @@ pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) missing.\n", -ex
 pod2usage( -msg  => "ERROR!  Required argument -r (reference fasta) missing.\n", -exitval => 2) if (! $refFasta);
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) missing.\n", -exitval => 2)  if (! $outDir);
 
-if($debug)
-{	require warnings; import warnings;
-	require Data::Dumper; import Data::Dumper;
-	require diagnostics;
+if($debug) {
+	require warnings; import warnings;
 	$keep=1;
 	$verbose=10;
+	if($debug>1) {
+		$verbose=100;
+		require Data::Dumper; import Data::Dumper;
+		require diagnostics; import diagnostics;
+	}
+	$tmp_in_outdir=1 if($debug>2);
 }
 
 
@@ -98,72 +108,75 @@ if(-d $outDir)
 }
 
 
-### OUTPUT FILE LOCATIONS
-my $intermed="$outDir/intermed";
-my $bam_dir=$outDir."/bam";
-
-### CREATE OUTPUT DIR
-mkdir($outDir);
-mkdir($outDir."/intermed");
-mkdir($bam_dir);
-my(@files);
-if(-d $in)
-{	opendir(DIR,$in);
-	@files=grep /\.fastq$/, readdir(DIR);
-	close(DIR);
-	s/^/$in\// for @files;  #prepend $in (dirpath) to each element
-
-}
-elsif (-f $in)
-{	push(@files,$in);
-}
-else
-{	pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) file not found.\n", -exitval => 2) if (! $in);
-}
-
-
-### CREATE LOG FILES
-$logOut="$outDir/log.map.txt" if (! $logOut);
+### CREATE OUTPUT DIR AND OPEN LOG
+mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
+$logOut="$outDir/log.refmap.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
-logentry("SCRIPT STARTED ($ver)",0);
-print $LOG "Command: $0 $script\n";
-print $LOG "Executing on ".hostname."\n";
-print $LOG find_job_info();
-print $LOG "Running in Debug Mode\n" if($debug && $debug>0);
-print $LOG "Keeping intermediate files.  WARNING: Can consume significant extra disk space\n" if($keep && $keep>0);
-print $LOG "Log verbosity level: $verbose\n" if($verbose && $verbose>0);
+logentry("SCRIPT STARTED ($ver)",2);
+
+
+### OUTPUT FILE LOCATIONS
+$tmpdir								=	get_tmpdir($tmpdir);
+my $intermed					=	"$tmpdir/intermed";
+$intermed							=	"$outDir/intermed" if($tmp_in_outdir);
+my $bam_dir						=	$outDir."/bam";
+my $stage_dir					=	$tmpdir."input/";
+
+mkdir($intermed);
+mkdir($bam_dir);
+mkdir($stage_dir);
+
+
+### INITIATE LOG
+logentry("Command: $0 $script\n",2);
+logentry("Executing on ".hostname."\n",2);
+logentry(find_job_info(),2);
+logentry("Output directory $outDir (" . (df("$outDir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Temporary directory $tmpdir (" . (df("$tmpdir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Log verbosity: $verbose\n",2) if($verbose && $verbose>0);
+logentry("Running in Debug Mode $debug\n",2) if($debug && $debug>0);
+logentry("Keeping intermediate files.  WARNING: Can consume significant extra disk space\n",2) if($keep && $keep>0);
 
 
 ### REDREP BIN/SCRIPT LOCATIONS
 my $execDir=$ENV{'REDREPBIN'};
 my $utilDir=$ENV{'REDREPUTIL'};
 my $libDir=$ENV{'REDREPLIB'};
-print $LOG "RedRep Bin: $execDir\n";
-print $LOG "RedRep Utilities: $utilDir\n";
-print $LOG "RedRep Libraries: $libDir\n";
+logentry("RedRep Bin: $execDir\n",2);
+logentry("RedRep Utilities: $utilDir\n",2);
+logentry("RedRep Libraries: $libDir\n",2);
 
 
 ### CHECK FOR AND SETUP EXTERNAL DEPENDENCIES
-logentry("Checking External Dependencies",0);
+logentry("Checking External Dependencies",3);
 
 	# java
-	#our $java=check_dependency("java","-version","s/\r?\n/ | /g");
+	#our $java=check_dependency("java","-version","s/\r?\n/ | /g",1);
 	my $java_opts = "-Xmx${mem}g $javaarg -d64";
 
 	# bwa
-	my $bwa=check_dependency("bwa",' 2>&1 |grep "Version"',"s/\r?\n/ | /g");
+	my $bwa=get_path_bwa(1);
 
 	# samtools
-	my $samtools=check_dependency("samtools","--version","s/\r?\n/ | /g");
+	my $samtools = get_path_samtools(1);
 
-#	#picard
-#	# Picard tools (as of v 2.19.0) gives an error code of 1 when version number is checked.  To get around the $? check in &cmd(), added " 2>&1;v=0" to the version check flag to make error code 0, but still get version redirected to SDTOUT
-#	my $picard=check_jar("Picard Tools",$ENV{'PICARDJAR'},"AddCommentsToBam --version 2>&1;v=0","s/\r?\n/ | /g","Environment Variable PICARDJAR is not defined or is a not pointing to a valid file!  Please define valid picard tools location with command: export PICARDJAR='PATH_TO_PICARD_JAR");
-
-	#GATK
-#	my $GATK=check_jar("GATK",$ENV{'GATKJAR'},"--version","s/\r?\n/ | /g","Environment Variable GATKJAR is not defined or is a not pointing to a valid jar file!  Please define valid GATK jar file location with command: export GATKJAR='PATH_TO_GATK_JAR");
-	my $gatk  = check_dependency("gatk","--version 2>&1 | tail -n +4","s/\r?\n/ | /g");
+	# GATK
+	my $gatk  = get_path_gatk(1);
 	$gatk .= qq( --java-options "$java_opts");
+
+
+### FIND FILES
+logentry("COMPILING INPUT FILES",3);
+my @files=split_in_files($in, qr/\.fastq$/);
+logentry("FASTQ FILES DETECTED: ".scalar(@files),4);
+
+
+### STAGE Files
+if($stage) {
+	logentry("STAGING FILES TO $tmpdir",3);
+	@files=stage_files($stage_dir,\@files);
+	logentry(scalar(@files)." input fastq files staged to $stage_dir",4);
+}
 
 
 ############
@@ -174,7 +187,7 @@ logentry("Checking External Dependencies",0);
 
 foreach my $inFile(@files)
 {
-	logentry("BEGIN PROCESSING FILE $inFile",0);
+	logentry("BEGIN PROCESSING FILE $inFile",3);
 	my $stub=fileparse($inFile, qr/\.[^.]*$/);
 
 	### OUTPUT FILE LOCATIONS
@@ -183,49 +196,48 @@ foreach my $inFile(@files)
 	my $rg_bam="$intermed/$stub.rg.bam";
 	my $sort_bam="$bam_dir/$stub.rg.sort.bam";
 
-	if(! -e $refFasta.".fai")
-	{	logentry("REFERENCE FASTA INDEX NOT FOUND: BUILDING",0);
-		$sys=cmd("$samtools faidx $refFasta","Building reference index");
-	}
-	if(! -e "$refPath/$stub2.dict")
-	{	logentry("REFERENCE DICTIONARY NOT FOUND: BUILDING",0);
-		$sys=cmd("$gatk CreateSequenceDictionary -R $refFasta -O $refPath/$stub2.dict","Building reference dictionary");
-	}
+	# check Reference Fasta build indexes if needed
+	check_ref_fasta($refFasta);
 
 	if(! -e $refFasta.".amb" || ! -e $refFasta.".ann" || ! -e $refFasta.".bwt" || ! -e $refFasta.".pac" || ! -e $refFasta.".sa")
-	{	logentry("REFERENCE FASTA BWT INDEXES NOT FOUND: BUILDING",0);
+	{	logentry("REFERENCE FASTA BWT INDEXES NOT FOUND: BUILDING",4);
 		$sys=cmd("$bwa index $refFasta","Build reference BWT indexes");
 	}
 
-	logentry("REFERENCE MAPPING",0);
+	logentry("REFERENCE MAPPING",4);
 	my $flags="";
 	$flags="-p" if($pe);
 	$sys=cmd_STDOUT("$bwa mem $flags -t $ncpu $refFasta $inFile 1> $bwa_out ","BWA Reference Mapping");
 
-	logentry("MAKE BAM FILE",0);
+	logentry("MAKE BAM FILE",4);
 	$sys=cmd("cat $bwa_out | $samtools view -bS -F 4 - -o $bwa_bam","Convert BWA to BAM");
 
-	logentry("ADD READ GROUPS TO ALIGNMENT BAM",0);
-	$sys=cmd("$gatk AddOrReplaceReadGroups -I $bwa_bam -O $rg_bam --SORT_ORDER coordinate --RGID $stub --RGLB $stub --RGPL illumina --RGPU $stub --RGSM $stub --VALIDATION_STRINGENCY LENIENT --MAX_RECORDS_IN_RAM 500000","Add read groups to BAM");
+	logentry("ADD READ GROUPS TO ALIGNMENT BAM",5);
+	$sys=cmd("$gatk AddOrReplaceReadGroups --INPUT $bwa_bam --OUTPUT $rg_bam --SORT_ORDER coordinate --RGID $stub --RGLB $stub --RGPL illumina --RGPU $stub --RGSM $stub --VALIDATION_STRINGENCY LENIENT --MAX_RECORDS_IN_RAM 500000","Add read groups to BAM");
 
-	logentry("SORT ALIGNMENT BAM FILE",0);
-	$sys=cmd("$gatk ReorderSam -I $rg_bam -O $sort_bam --REFERENCE $refFasta","Sorting BAM file");
+	logentry("SORT ALIGNMENT BAM FILE",5);
+	$sys=cmd("$gatk ReorderSam --INPUT $rg_bam --OUTPUT $sort_bam --SEQUENCE_DICTIONARY $refFasta","Sorting BAM file");
 
-	logentry("BUILDING BAM INDEX",0);
+	logentry("BUILDING BAM INDEX",5);
 	$sys=cmd("$samtools index $sort_bam","Building BAM index");
 
-	logentry("FINISH PROCESSING FILE $inFile",0);
+	logentry("FINISH PROCESSING FILE $inFile",3);
 }
 
-	# FILE CLEAN UP
-	logentry("FILE CLEAN UP",0);
-	if(! $keep)
-	{	$sys=remove_tree($intermed);
-	}
+
+### FILE CLEAN UP
+logentry("FILE CLEAN UP",3);
+if($keep && ! $tmp_in_outdir) {
+	logentry("Saving intermediate tmp directory",4);
+	$sys=dircopy($intermed, "$outDir/intermed");
+}
+logentry("Removing tmp files",4);
+$sys=remove_tree($tmpdir);
 
 
-
-logentry("SCRIPT COMPLETE",0);
+### WRAP UP
+logentry("SCRIPT COMPLETE",2);
+logentry("TOTAL EXECUTION TIME: ".script_time(),2);
 close($LOG);
 
 exit 0;
@@ -238,6 +250,9 @@ exit 0;
 
 __END__
 
+
+#######################################
+########### DOCUMENTATION #############
 =pod
 
 =head1 NAME
@@ -255,11 +270,21 @@ Accepts fastq output from redrep-qc.pl and fasta-formatted reference sequence(s)
 
 =head1 OPTIONS
 
+=head2 REQUIRED PARAMETERS
+
 =over 3
 
-=item B<-1, -i, --in, --in1>=FILENAME
+=item B<-i, --in>=FILENAME
 
-Input file in fastq format or directory of fastq files. (Required)
+Input fastq files.  (Required)
+
+Can be one of the folllowing formats:
+
+1. Path to one or more fastq files (comma separated; must have ".fastq" extension)
+2. Path to one or more FOFN files (file with complete paths to one or more fastq files -- 1 per line; must have ".fofn" or ".fofn.list" extension)
+3. Path to one or more directories of fastq files (comma separated)
+4. Path to one or more FODN files (file with complete paths to directories containing one or more fastq files -- 1 directory per line; must have ".fodn" or ".fodn.list" extension)
+5. Comma separated list of any combination of 1-4.
 
 =item B<-o, --out>=DIRECTORY_NAME
 
@@ -267,19 +292,15 @@ Output directory. (Required)
 
 =item B<-r, --ref>=FILENAME
 
-Reference FASTA. (Required)
+Reference FASTA. Having a pre-built bwa index in the same directory will speed analysis.  If no bwa index is provided, script will build index and save to location of reference fasta (needs write permissions) (Required)
 
-=item B<-l, --log>=FILENAME
+=back
 
-Log file output path. [ Default output-dir/log.map.txt ]
+=head2 OPTIONAL PARAMETERS
 
-=item B<-f, --force>
+=head3 Program Specific Parameters
 
-If output directory exists, force overwrite of previous directory contents.
-
-=item B<-k, --keep>
-
-Retain temporary intermediate files.
+=over 3
 
 =item B<-p, --pe>
 
@@ -297,21 +318,55 @@ bwa '-R' option: stop searching when there are >INT equally best hits [100]
 
 bwa '-o' option: maximum number or fraction of gap opens [1]
 
+=back
+
+=head3 Program Behavior and Resource Control
+
+=over 3
+
+=item B<-f, --force>
+
+If output directory exists, force overwrite of previous directory contents.
+
+=item B<-k, --keep>
+
+Retain temporary intermediate files.
+
 =item B<--mem>=integer
 
-Max RAM usage for GATK/Picard Java Virtual Machine in GB (default 2)
+Max RAM usage for GATK Java Virtual Machine in GB (default 2)
+
+=item B<-S, --stage>
+
+When specified, input files will be staged to the tmpdir.  Can increase performance on clusters and other situations where the output directory is on network attached or cloud storage.
 
 =item B<-t, --threads>=integer
 
 Number of cpu's to use for threadable operations.
 
-=item B<-V, --verbose>
+=item B<-T, --tmpdir>
 
-Produce detailed log.  Can be involed multiple times for additional detail levels.
+Set directory (local directory recommended) for fast temporary and staged file operations.  Defaults to system environment variable REDREP_TMPDIR, TMPDIR, TEMP, or TMP in that order (if they exist).  Otherwise assumes /tmp.
 
-=item B<-v, --ver, --version>
+=back
 
-Displays the current version.
+=head3 Logging Parameters
+
+=over 3
+
+=item B<-l, --log>=FILENAME
+
+Log file output path. [ Default output-dir/log.map.txt ]
+
+=item B<-V, --verbose>[=integer]
+
+Produce detailed log.  Can be involed multiple times for additional detail levels or level can be specified. 0: ERROR, 1: WARNINGS, 2: INFO, 3-6: STATUS LEVELS, 7+:DEBUGGING INFO (default=4)
+
+=back
+
+=head3 Help
+
+=over 3
 
 =item B<-h, --help>
 
@@ -320,6 +375,10 @@ Displays the usage message.
 =item B<-m, --man, --manual>
 
 Displays full manual.
+
+=item B<-v, --ver, --version>
+
+Displays the current version.
 
 =back
 
@@ -343,47 +402,13 @@ Displays full manual.
 
 =item 2.1 - 2/2/2017: Code cleanup including minimizing OS dependencies
 
-=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.
+=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.  Last version with GATK 3.x compatibility.
+
+=item 2.2 - 10/28/2019: Added GATK v4 compatibility.  Many other enhancements including parallelization, documentation, and logging.
 
 =back
 
 =head1 DEPENDENCIES
-
-=head2 Requires the following Perl Modules:
-
-=head3 Non-Core (Not installed by default in some installations of Perl)
-
-=over 3
-
-=item File::Which
-
-=item Parallel::ForkManager
-
-=back
-
-=head3 Core Modules (Installed by default in most Perl installations)
-
-=over 3
-
-=item strict
-
-=item Exporter
-
-=item File::Basename
-
-=item File::Copy
-
-=item File::Path
-
-=item Getopt::Long
-
-=item Pod::Usage
-
-=item POSIX
-
-=item Sys::Hostname
-
-=back
 
 =head2 Requires the following external programs be in the system PATH:
 
@@ -393,9 +418,9 @@ Displays full manual.
 
 =item samtools (tested with version 1.4.1)
 
-=item picard-tools (tested with version 2.19.0 SNAPSHOT)
-
 =item java (tested with version 1.8.0_151-b12 OpenJDK Runtime Environment)
+
+=item GATK (tested with version 4.1.4.0)
 
 =back
 

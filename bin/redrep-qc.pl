@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-qc.pl Ver. 2.11 (10/9/2019 rev)";
+my $ver="redrep-qc.pl Ver. 2.2 [10/28/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -10,13 +10,16 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 die "ERROR: RedRep Installation Environment Variables not properly defined: REDREPBIN.  Please check your redrep.profile REDREP_INSTALL setting and make sure that file is sourced.\n" unless($ENV{'REDREPBIN'} && -e $ENV{'REDREPBIN'} && -d $ENV{'REDREPBIN'});
 
 use lib $ENV{'REDREPLIB'};
-use RedRep::Utils qw(avgQual check_dependency cmd concat countFastq find_job_info IUPAC2regexp IUPAC_RC logentry logentry_then_die);
+use RedRep::Utils;
+use RedRep::Utils qw(avgQual concat countFastq IUPAC2regexp IUPAC_RC);
 use Getopt::Long qw(:config no_ignore_case);
 use Parallel::ForkManager;
 use Pod::Usage;
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
+use File::Copy::Recursive qw(dircopy);
 use File::Path qw(make_path remove_tree);
+use Filesys::Df qw(df);
 use Sys::Hostname qw(hostname);
 
 sub BC_File;
@@ -25,7 +28,7 @@ sub fastq_pair_repair;
 sub filter;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($inFile,$inFile2,$outDir,$help,$manual,$force,$sepQC,$no_preQC,$no_postQC,$metaFile,$debug,$version,$int_rs_keep,$miss_hang_keep);
+my($inFile,$inFile2,$outDir,$help,$manual,$force,$sepQC,$preQC,$postQC,$metaFile,$debug,$version,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$int_rs_keep,$miss_hang_keep);
 our($keep);
 
 
@@ -41,7 +44,7 @@ our $maxN			=	2;
 my $part			=	1;						#  Partial alignment max for BC deconv
 my $mismatch	=	1;
 my $ncpu			=	1;
-our $verbose	= 0;
+our $verbose	= 4;
 
 GetOptions (
 	"1|i|in|in1=s"			=>	\$inFile,
@@ -52,13 +55,13 @@ GetOptions (
 	"s|stats=s"					=>	\$statsOut,
 
 	"f|force"						=>	\$force,
-	"d|debug"						=>	\$debug,
+	"d|debug:+"					=>	\$debug,
 	"k|keep|keep_temp"	=>	\$keep,
-	"V|verbose+"				=>	\$verbose,
-	"a|no_pre_qc"				=>	\$no_preQC,
-	"z|no_post_qc"			=>	\$no_postQC,
+	"V|verbose:+"				=>	\$verbose,
+	"pre_qc!"						=>	\$preQC,
+	"post_qc!"					=>	\$postQC,
 
-	"b|per_barcode_qc"	=>	\$sepQC,
+	"per_barcode_qc"		=>	\$sepQC,
 
 	"5|5p_adapt=s"			=>	\$fpAdapt,    			# 5' sequencing adapter
 	"3|3p_adapt=s"			=>	\$tpAdapt,					# 3' sequencing adapter
@@ -73,6 +76,9 @@ GetOptions (
 	"keep_miss_hang"		=>	\$miss_hang_keep,
 
 	"t|threads|ncpu=i"	=>	\$ncpu,
+	"T|tmpdir=s"				=>	\$tmpdir,
+	"S|stage"						=>	\$stage,
+	"tmp_in_outdir"			=>	\$tmp_in_outdir,
 
 	"v|ver|version"			=>	\$version,
 	"h|help"						=>	\$help,
@@ -89,12 +95,16 @@ pod2usage( -msg  => "ERROR!  Required argument -m (metadata file) not found.\n",
 
 
 ### DEBUG MODE
-if($debug)
-{	require warnings; import warnings;
-	require Data::Dumper; import Data::Dumper;
-	require diagnostics;
+if($debug) {
+	require warnings; import warnings;
 	$keep=1;
 	$verbose=10;
+	if($debug>1) {
+		$verbose=100;
+		require Data::Dumper; import Data::Dumper;
+		require diagnostics; import diagnostics;
+		$tmp_in_outdir=1 if($debug>2);
+	}
 }
 
 
@@ -123,42 +133,51 @@ if(-d $outDir)
 }
 
 
-### CREATE OUTPUT DIR
-mkdir($outDir);
-
-
-### CREATE LOG FILES
+### CREATE OUTPUT DIR AND OPEN LOG
+mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
 $logOut="$outDir/log.qc.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
-logentry("SCRIPT STARTED ($ver)",0);
-print $LOG "$0 $script\n";
-print $LOG "Executing on ".hostname."\n";
-print $LOG find_job_info();
-print $LOG "Running in Debug Mode\n" if($debug && $debug>0);
-print $LOG "Keeping intermediate files.  WARNING: Can consume significant extra disk space\n" if($keep && $keep>0);
-print $LOG "Log verbosity level: $verbose\n" if($verbose && $verbose>0);
+logentry("SCRIPT STARTED ($ver)",2);
+
+
+### OUTPUT FILE LOCATIONS
+$tmpdir								=	get_tmpdir($tmpdir);
+my $intermed					=	"$tmpdir/intermed";
+$intermed							=	"$outDir/intermed" if($tmp_in_outdir);
+
+mkdir($intermed);
+
+### INITIATE LOG
+logentry("Command: $0 $script\n",2);
+logentry("Executing on ".hostname."\n",2);
+logentry(find_job_info(),2);
+logentry("Output directory $outDir (" . (df("$outDir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Temporary directory $tmpdir (" . (df("$tmpdir")->{'bfree'}/1,073,741,824) . " GB free)\n",2);
+logentry("Log verbosity: $verbose\n",2) if($verbose && $verbose>0);
+logentry("Running in Debug Mode $debug\n",2) if($debug && $debug>0);
+logentry("Keeping intermediate files.  WARNING: Can consume significant extra disk space\n",2) if($keep && $keep>0);
 
 
 ### REDREP BIN/SCRIPT LOCATIONS
 my $execDir=$ENV{'REDREPBIN'};
 my $utilDir=$ENV{'REDREPUTIL'};
 my $libDir=$ENV{'REDREPLIB'};
-print $LOG "RedRep Bin: $execDir\n";
-print $LOG "RedRep Utilities: $utilDir\n";
-print $LOG "RedRep Libraries: $libDir\n";
+logentry("RedRep Bin: $execDir\n",2);
+logentry("RedRep Utilities: $utilDir\n",2);
+logentry("RedRep Libraries: $libDir\n",2);
 
 
 ### CHECK FOR AND SETUP EXTERNAL DEPENDENCIES
-logentry("Checking External Dependencies",0);
+logentry("Checking External Dependencies",3);
 
 	# cutadapt
-	my $cutadapt=check_dependency("cutadapt","--version","s/\r?\n/ | /g","Available from http://code.google.com/p/cutadapt/");
+	my $cutadapt=check_dependency("cutadapt","--version","s/\r?\n/ | /g","Available from http://code.google.com/p/cutadapt/",1);
 
 	# fastqc
-	my $fastqc=check_dependency("fastqc","--version","s/\r?\n/ | /g","Available from http://www.bioinformatics.babraham.ac.uk/projects/fastqc/");
+	my $fastqc=check_dependency("fastqc","--version","s/\r?\n/ | /g","Available from http://www.bioinformatics.babraham.ac.uk/projects/fastqc/",1);
 
 	# fastx_barcode_splitter
-	my $fastx_bc_split=check_dependency("fastx_barcode_splitter.pl"," |head -n 1","s/\r?\n/ | /g","Part of fastx toolkit, available from http://hannonlab.cshl.edu/fastx_toolkit/commandline.html");
+	my $fastx_bc_split=check_dependency("fastx_barcode_splitter.pl"," |head -n 1","s/\r?\n/ | /g","Part of fastx toolkit, available from http://hannonlab.cshl.edu/fastx_toolkit/commandline.html",1);
 
 
 ### STAT FILE
@@ -191,7 +210,7 @@ my $dir_postQC=$outDir."/post-fastqc";
 ### STEP 1 -- READ METADATA FILE
 # Reads in metadata file and parses out informative fields into a hash called %meta
 
-logentry("BEGIN STEP 1: PROCESS METADATA FILE",0);
+logentry("BEGIN STEP 1: PROCESS METADATA FILE",3);
 
 my %meta;		# metadata hash of hashes with unique_id as primary key, @ targetfields as secondary keys
 my %index;		# hash with p1_index_seq,p2_index_seq as key, unique_id as value
@@ -240,7 +259,7 @@ my %p1_p2_ind;	# hash of arrays mapping p1_index_seq (key) to p2_index_seq (valu
 ### STEP 2 -- MAKE BARCODE FILES
 # Uses metadata file to produce barcode file(s) required by fastx_barcode_splitter.pl
 
-logentry("BEGIN STEP 2: CREATE BARCODE FILES",0);
+logentry("BEGIN STEP 2: CREATE BARCODE FILES",3);
 my $BC_p2;
 my @BCLen_p1;
 my @BCLen_p2;
@@ -250,7 +269,7 @@ foreach my $l (@BCLen_p1)
 }
 (@BCLen_p2)=BC_File($BCFile_p2_base,"p2",\%meta);
 
-unless(@BCLen_p2==0 && $BCLen_p2[0]==0)
+if($BCLen_p2[0] && @BCLen_p2!=0 && $BCLen_p2[0]!=0)
 {	$BC_p2=1;
 	foreach my $l (@BCLen_p2)
 	{	push(@BCFile_p2,$l);
@@ -262,7 +281,7 @@ else
 }
 
 ### STEP 3 -- INITIAL STATS
-logentry("BEGIN STEP 3: PRODUCE INITIAL STATISTICS",0);
+logentry("BEGIN STEP 3: PRODUCE INITIAL STATISTICS",3);
 print $STAT "INITIAL STATISTICS\n";
 $sys=countFastq("$inFile", "Count input file 1 fastq file");
 print $STAT "Sequence count in input file 1: $sys";
@@ -274,19 +293,19 @@ print $STAT "\n";
 
 
 ### STEP 4 -- PRE-FASTQC
-unless($no_preQC)
-{	logentry("BEGIN STEP 4: PRE-FASTQC",0);
+if($preQC)
+{	logentry("BEGIN STEP 4: PRE-FASTQC",3);
 	mkdir($dir_preQC);
 	$sys=cmd("$fastqc --outdir $dir_preQC --format fastq --threads $ncpu --extract --quiet $inFile", "Run Pre-fastqc File 1 (P1)");
 	$sys=cmd("$fastqc --outdir $dir_preQC --format fastq --threads $ncpu --extract --quiet $inFile2", "Run Pre-fastqc File 2 (P2)") if ($inFile2);
 }
 else
-{	logentry("OMITTING STEP 4: PRE-FASTQC",0);
+{	logentry("OMITTING STEP 4: PRE-FASTQC",2);
 }
 
 
 ### STEP 5 -- TRIMMING
-	logentry("BEGIN STEP 5: TRIMMING",0);
+	logentry("BEGIN STEP 5: TRIMMING",3);
 	mkdir($dir_trim1);
 	$sys=cmd("$cutadapt --quality-base 33 -q ${qual} -a $tpAdapt -m 1 -o '$dir_trim1/$stub.trim1.fastq' $inFile","Trim1-p2 (qual/3' seq adapter)");
 	$sys=countFastq("$dir_trim1/$stub.trim1.fastq", "Trim1 count fastq");
@@ -301,7 +320,7 @@ else
 
 
 ### STEP 6 -- BARCODE DECONVOLUTION
-	logentry("BEGIN STEP 6: BARCODE DECONVOLUTION",0);
+	logentry("BEGIN STEP 6: BARCODE DECONVOLUTION",3);
 
 	mkdir($dir_deconv_p1);
 
@@ -358,7 +377,7 @@ else
 
 
 ### STEP 7 -- MERGE BARCODES
-logentry("BEGIN STEP 7: MERGE BARCODES",0);
+logentry("BEGIN STEP 7: MERGE BARCODES",3);
 
 
 {	mkdir($dir_recomb);
@@ -423,7 +442,7 @@ logentry("BEGIN STEP 7: MERGE BARCODES",0);
 ### STEP 8 -- FILTER
 # TRIM BARCODE AND FILTER SEQUENCES WITHOUT 5' HANG OR WITH INTERNAL RESTRICTION SITE
 
-logentry("BEGIN STEP 8: FILTER",0);
+logentry("BEGIN STEP 8: FILTER",3);
 
 print $STAT "=================================================\nSTATISTICS AFTER FILTERS\n";
 
@@ -448,7 +467,7 @@ print $STAT "=================================================\nSTATISTICS AFTER
 
 ### STEP 9 -- FINAL RECONCILE PAIRS
 
-logentry("BEGIN STEP 9: RECONCILE PAIRS",0);
+logentry("BEGIN STEP 9: RECONCILE PAIRS",3);
 
 {	mkdir($dir_final_deconv);
 	mkdir($dir_final_concat);
@@ -491,7 +510,7 @@ logentry("BEGIN STEP 9: RECONCILE PAIRS",0);
 
 ### STEP 10 -- FINAL CONCATENATE
 
-logentry("BEGIN STEP 10: PRODUCE CONCATENATED FASTQs",0);
+logentry("BEGIN STEP 10: PRODUCE CONCATENATED FASTQs",3);
 
 {	opendir(DIR,"$dir_final_deconv");
 	my @files=grep { (!/^\./) } readdir DIR;
@@ -516,8 +535,8 @@ logentry("BEGIN STEP 10: PRODUCE CONCATENATED FASTQs",0);
 
 ### STEP 11 -- POST-fastqc
 
-unless($no_postQC)
-{	logentry("BEGIN STEP 11: POST-FASTQC",0);
+if($postQC)
+{	logentry("BEGIN STEP 11: POST-FASTQC",3);
 
 	my @files;
 
@@ -541,13 +560,13 @@ unless($no_postQC)
 	}
 }
 else
-{	logentry("OMITTING STEP 11: POST-FASTQC",0);
+{	logentry("OMITTING STEP 11: POST-FASTQC",2);
 }
 
 
 ### STEP 12 -- CLEAN UP
 
-logentry("BEGIN STEP 12: CLEAN UP",0);
+logentry("BEGIN STEP 12: CLEAN UP",3);
 
 if(! $keep)
 {	foreach my $f (@BCFile_p1)
@@ -566,9 +585,22 @@ if(! $keep)
 	}
 }
 
-logentry("SCRIPT COMPLETE",0);
+
+### STANDARD FILE CLEAN UP
+if($keep && ! $tmp_in_outdir) {
+	logentry("Saving intermediate tmp directory",4);
+	$sys=dircopy($intermed, "$outDir/intermed");
+}
+logentry("Removing tmp files",4);
+$sys=remove_tree($tmpdir);
+
+
+### WRAP UP
+logentry("SCRIPT COMPLETE",2);
+logentry("TOTAL EXECUTION TIME: ".script_time(),2);
 close($LOG);
 close($STAT);
+
 
 exit 0;
 
@@ -588,8 +620,8 @@ sub BC_File
 	my @BCLen;
 	my %seen;
 	my %uniq_bc;
-	logentry("Processing $direction barcode file",1);
-	foreach my $sample (sort {$a <=> $b} keys %meta)
+	logentry("Processing $direction barcode file",4);
+	foreach my $sample (sort {$a cmp $b} keys %meta)
 	{	if ($meta{$sample}{$direction."_index_seq"})
 		{	$BC=1;
 			# Add index to HOA unless if has been seen previously
@@ -621,7 +653,7 @@ sub BCStats
 {	my $inDir=shift;
 	my $sys;
 	my $total;
-	logentry("Processing Sequence Count Stats for $inDir",1);
+	logentry("Processing Sequence Count Stats for $inDir",4);
 
 	opendir(DIR,"$inDir");
 	my @files=grep { (!/^\./) } readdir DIR;
@@ -653,7 +685,7 @@ sub fastq_pair_repair
 	my $outName=shift;
 	my $no_singles=shift;
 
-	logentry("Merging paired end mates: $PE1 $PE2",1);
+	logentry("Merging paired end mates: $PE1 $PE2",5);
 
 	# PARSE OUTPUT FILEBASE
 	my $out1=fileparse($PE1, qr/\.[^.]*(\.gz)?$/);
@@ -745,7 +777,7 @@ sub filter
 	my $suffix=shift;
 	my %meta=%{(shift)};
 
-	logentry("Filtering $suffix",1);
+	logentry("Filtering $suffix",4);
 
 	opendir(DIR,"$in_dir");
 	my @files=grep { (!/^\./) } readdir DIR;
@@ -901,18 +933,21 @@ sub filter
 	}
 	$manager->wait_all_children;
 	sleep 1;
-	$sys=cmd("cat $out_dir/tmp/*.stats.tmp > $out_dir/tmp/all.stats.tmp");
-	my $counts=cmd("awk 'BEGIN {FS=OFS=".'"\t"'."} NR == 1 { n2 =\$2; n3 = \$3; n4 = \$4; n5 = \$5; n6 = \$6; n7 = \$7; n8 = \$8; n9 = \$9; next } { n2 += \$2; n3 += \$3; n4 += \$4; n5 += \$5; n6 +=\$6; n7 += \$7; n8 += \$8; n9 += \$9 } END { print n2, n3, n4, n5, n6, n7, n8, n9 }' $out_dir/tmp/all.stats.tmp");
+	$sys=cmd("cat $out_dir/tmp/*.stats.tmp > $out_dir/tmp/all.stats.tmp","Concatenate temporary stats files");
+	my $counts=cmd("awk 'BEGIN {FS=OFS=".'"\t"'."} NR == 1 { n2 =\$2; n3 = \$3; n4 = \$4; n5 = \$5; n6 = \$6; n7 = \$7; n8 = \$8; n9 = \$9; next } { n2 += \$2; n3 += \$3; n4 += \$4; n5 += \$5; n6 +=\$6; n7 += \$7; n8 += \$8; n9 += \$9 } END { print n2, n3, n4, n5, n6, n7, n8, n9 }' $out_dir/tmp/all.stats.tmp","Format Stats File");
 	$sys=cmd("sort -k1,1 $out_dir/tmp/all.stats.tmp","Sort temp stats file");
 	print $STAT $sys;
 	print $STAT "TOTAL\t$counts\n";
 	print $STAT "\n";
 	$sys=remove_tree("$out_dir/tmp") unless ($main::keep);
-
 }
+
 
 __END__
 
+
+#######################################
+########### DOCUMENTATION #############
 =pod
 
 =head1 NAME
@@ -929,6 +964,8 @@ Performs quality evaluation, trimming, and filtering of Illumina sequenced reduc
 
 =head1 OPTIONS
 
+=head2 REQUIRED PARAMETERS
+
 =over 3
 
 =item B<-1, -i, --in, --in1>=FILENAME
@@ -937,7 +974,7 @@ Input file (single file or first read) in fastq format. (Required)
 
 =item B<-2, --in2>=FILENAME
 
-Input file (second read) in fastq format. (Required)
+Input file (second read) in fastq format. (Required, if paired end).  NOTE: Paired end mode is experimental, use at own risk.
 
 =item B<-o, --out>=DIRECTORY_NAME
 
@@ -945,35 +982,17 @@ Output directory. (Required)
 
 =item B<-c, --meta>=FILENAME
 
-Metadata file in tab delimited format.  Must contain header row with at least the following column headings:  unique_id,p1_recog_site,p1_hang_seq,p1_index_seq,p2_recog_site,p2_hang_seq,[p2_index_seq].  Empty fields in a required column may be left blank or filled with: N/A.
+Metadata file in tab delimited format.  Must contain header row with at least the following column headings:  unique_id,p1_recog_site,p1_hang_seq,p1_index_seq,p2_recog_site,p2_hang_seq,[p2_index_seq].  Empty fields in a required column may be left blank or filled with: N/A. (Required)
 
-=item B<-l, --log>=FILENAME
+=back
 
-Log file output path. [ Default output-dir/log.qc.txt ]
+=head2 OPTIONAL PARAMETERS
 
-=item B<-s, --stats>=FILENAME
+=head3 Program Specific Parameters
 
-Stats file output path. [ Default output-dir/stats.txt ]
+=head4 Adapter Parameters
 
-=item B<-f, --force>
-
-If output directory exists, force overwrite of previous directory contents.
-
-=item B<-k, ,--keep>
-
-Retain temporary intermediate files.
-
-=item B<-a, --no_pre_qc>
-
-Skip pre-trimming quality report.
-
-=item B<-z, --no_post_qc>
-
-Skip post-trimming quality report.
-
-=item B<-b, --per_barcode_qc>
-
-Run post-trimming quality reports on each barcode instead of on the full dataset.
+=over 3
 
 =item B<-5, --5p_adapt>
 
@@ -982,6 +1001,44 @@ Specify 5' sequencing adapter.  Default 'AATGATACGGCGACCACCGAGATCTACACTCTTTCCCTA
 =item B<-3, --3p_adapt>
 
 Specify 3' sequencing adapter.  Default 'GATCGGAAGAGCACACGTCTGAACTCCAGTCAC'.
+
+=back
+
+=head4 Barcode Parameters
+
+=over 3
+
+=item B<-p, --part>=integer
+
+Allow barcode to be -p bp shorter than the specified barcode.  -e parameter must be greater than or equal to -p.  (default=1)
+
+=item B<-e, --mismatch>=integer
+
+Allow barcode to have -e mismatches from the specified barcode.  Gaps and missing ends (-p) count as mismatches.  (default=1)
+
+=back
+
+=head4 QC Reporting Parameters
+
+=over 3
+
+=item B<--pre_qc>
+
+Perform pre-trimming quality report.
+
+=item B<--post_qc>
+
+Perform post-trimming quality report.
+
+=item B<--per_barcode_qc>
+
+Run post-trimming quality reports on each barcode instead of on the full dataset.
+
+=back
+
+=head4 Sequence Trimming and Filtering Parameters
+
+=over 3
 
 =item B<-x, --maxLen>=integer
 
@@ -995,14 +1052,6 @@ Minimum sequence length cutoff.  default=35
 
 Maximum number of consecutive N's to allow in middle of trimmed sequence.  default=2
 
-=item B<-p, --part>=integer
-
-Allow barcode to be -p bp shorter than the specified barcode.  -m parameter must be greater than or equal to -p.  default=1
-
-=item B<-e, --mismatch>=integer
-
-Allow barcode to have -m mismatches from the specified barcode.  default=1
-
 =item B<-q, --qual>=integer(0-93)
 
 Quality cut-off for end-trimming.  Performed using the BWA algorithm.  default=30
@@ -1015,17 +1064,55 @@ Keep sequences that lack the expected overhang sequence.
 
 Keep sequences with internal restriction site.
 
+=back
+
+=head3 Program Behavior and Resource Control
+
+=over 3
+
+=item B<-f, --force>
+
+If output directory exists, force overwrite of previous directory contents.
+
+=item B<-k,--keep>
+
+Retain temporary intermediate files.
+
+=item B<-S, --stage>
+
+When specified, input files will be staged to the tmpdir.  Can increase performance on clusters and other situations where the output directory is on network attached or cloud storage.
+
 =item B<-t, --threads>=integer
 
 Number of cpu's to use for threadable operations.
 
-=item B<-V, --verbose>
+=item B<-T, --tmpdir>
 
-Produce detailed log.  Can be involed multiple times for additional detail levels.
+Set directory (local directory recommended) for fast temporary and staged file operations.  Defaults to system environment variable REDREP_TMPDIR, TMPDIR, TEMP, or TMP in that order (if they exist).  Otherwise assumes /tmp.
 
-=item B<-v, --ver, --version>
+=back
 
-Displays the current version.
+=head3 Logging Parameters
+
+=over 3
+
+=item B<-l, --log>=FILENAME
+
+Log file output path. [ Default output-dir/log.qc.txt ]
+
+=item B<-s, --stats>=FILENAME
+
+Stats file output path. [ Default output-dir/stats.txt ]
+
+=item B<-V, --verbose>[=integer]
+
+Produce detailed log.  Can be involed multiple times for additional detail levels or level can be specified. 0: ERROR, 1: WARNINGS, 2: INFO, 3-6: STATUS LEVELS, 7+:DEBUGGING INFO (default=4)
+
+=back
+
+=head3 Help
+
+=over 3
 
 =item B<-h, --help>
 
@@ -1034,6 +1121,10 @@ Displays the usage message.
 =item B<-m, --man, --manual>
 
 Displays full manual.
+
+=item B<-v, --ver, --version>
+
+Displays the current version.
 
 =back
 
@@ -1069,47 +1160,13 @@ Displays full manual.
 
 =item 2.1 - 2/1/2017: Code cleanup.
 
-=item 2.11 = 10/9/2019: Minor code cleanup.  Verbosity settings added.
+=item 2.11 - 10/9/2019: Minor code cleanup.  Verbosity settings added.  Last version with GATK 3.x compatibility.
+
+=item 2.2 - 10/28/2019: Reversed QC report parameters, now default is no pre or post QC report.  Many enhancements including parallelization, documentation, and logging.
 
 =back
 
 =head1 DEPENDENCIES
-
-=head2 Requires the following Perl Modules:
-
-=head3 Non-Core (Not installed by default in some installations of Perl)
-
-=over 3
-
-=item File::Which
-
-=item Parallel::ForkManager
-
-=back
-
-=head3 Core Modules (Installed by default in most Perl installations)
-
-=over 3
-
-=item strict
-
-=item Exporter
-
-=item File::Basename
-
-=item File::Copy
-
-=item File::Path
-
-=item Getopt::Long
-
-=item Pod::Usage
-
-=item POSIX
-
-=item Sys::Hostname
-
-=back
 
 =head2 Requires the following external programs be in the system PATH:
 
