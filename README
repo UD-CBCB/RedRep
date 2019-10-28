@@ -31,7 +31,7 @@ The following software are required for various steps in the RedRep pipeline and
   cutadapt (1.14)
   fastqc (0.11.5)
   fastx toolkit (0.0.13)
-  GATK (3.8-0)
+  GATK (4.1.4.0)
   Java Runtime Environment - JRE (Open JDK JRE 1.8.0_151-b12)
   Perl (5.24.3)
   Picard tools (2.19)
@@ -40,24 +40,6 @@ The following software are required for various steps in the RedRep pipeline and
   usearch (ver i11.0.667_i86linux32; must be ver 8 or later and accessible in the system PATH as "usearch")
 
   BOTH usearch versions are currently required to run redrep-cluster.pl
-
-The following Perl libraries are required and must be accessible by Perl:
-
-  Cwd
-  Exporter
-  File::Basename
-  File::Copy
-  File::Path
-  File::Which +
-  Getopt::Long
-  Parallel::ForkManager +
-  Pod::Usage
-  POSIX
-  Sys::Hostname
-  
-
-  + - Library not included in many default Perl installations
-
 
 The file redrep.profile should be edited to point to locations of files installed on your system.  The command below should be run before any redrep scripts.  This can be done at execution time or by adding the command to your bash_profile.
 
