@@ -273,7 +273,7 @@ my $uc_cluster_freq="$outDir/$stub.cluster_freq.tsv";
 	$sys=cmd("$usearch --cluster_smallmem ${slice} --leftjust $sizeinout --id $id --centroids $uc_centroid --uc $uc_uc --log $outDir/uclust_final.log --sortedby 'other'","UCLUST FINAL RUN: $slice");
 	$sys=cmd("$usearch --sortbysize $uc_centroid --fastaout $uc_centroid_filter --minsize $minsize","UCLUST CENTROID FILTER FINAL RUN: $slice") if($minsize>1);
 
-	$sys=cmd("grep '^S' $uc_uc | sort -k2,2 -nr> $uc_uc_seeds","Make seeds uc file");
+	$sys=cmd("grep '^S' $uc_uc | sort -k2,2 -n > $uc_uc_seeds","Make seeds uc file");
 	$sys=cmd("grep '^C' $uc_uc | sort -k3,3 -nr > $uc_uc_clusters","Make sorted seeds uc file");
 
 
