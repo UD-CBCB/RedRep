@@ -216,7 +216,7 @@ foreach my $inFile(@files)
 	$sys=cmd("$gatk AddOrReplaceReadGroups --INPUT $bwa_bam --OUTPUT $rg_bam --SORT_ORDER coordinate --RGID $stub --RGLB $stub --RGPL illumina --RGPU $stub --RGSM $stub --VALIDATION_STRINGENCY LENIENT --MAX_RECORDS_IN_RAM 500000","Add read groups to BAM");
 
 	logentry("SORT ALIGNMENT BAM FILE",5);
-	$sys=cmd("$gatk ReorderSam --INPUT $rg_bam --OUTPUT $sort_bam --REFERENCE $refFasta","Sorting BAM file");
+	$sys=cmd("$gatk ReorderSam --INPUT $rg_bam --OUTPUT $sort_bam --SEQUENCE_DICTIONARY $refFasta","Sorting BAM file");
 
 	logentry("BUILDING BAM INDEX",5);
 	$sys=cmd("$samtools index $sort_bam","Building BAM index");
