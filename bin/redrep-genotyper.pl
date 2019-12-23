@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-genotyper.pl Ver. 2.2 [10/28/2019 rev]";
+my $ver="redrep-genotyper.pl Ver. 2.21 [12/23/2019 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -11,7 +11,7 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 
 use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
-use RedRep::Utils qw(build_argument_list build_fofn build_listfile build_vcf_index check_genomicsdb get_timestamp retrieve_contigs split_in_files);
+use RedRep::Utils qw(build_argument_list build_fofn build_listfile build_vcf_index check_genomicsdb get_timestamp read_listfile retrieve_contigs split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
 use Parallel::ForkManager;
 use Pod::Usage;
@@ -220,7 +220,12 @@ logentry("Checking External Dependencies",3);
 	# Define intervals.  Each interval will be a separate thread.
 	my @intervals;
 	if($intervals) {
-		@intervals=split(/,/,$intervals);
+		if(-e $intervals && -f $intervals) {
+			@intervals=read_listfile($intervals);
+		}
+		else {
+			@intervals=split(/,/,$intervals);
+		}
 	}
 	else {
 		@intervals=@contigs;

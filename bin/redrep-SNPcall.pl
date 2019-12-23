@@ -11,7 +11,7 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 
 use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
-use RedRep::Utils qw(build_argument_list build_contig_list check_genomicsdb read_fofn read_listfile split_in_files);
+use RedRep::Utils qw(build_argument_list build_contig_list read_fofn read_listfile split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
 use Parallel::ForkManager;
 use Pod::Usage;
@@ -25,7 +25,7 @@ use Sys::Hostname qw(hostname);
 
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$refFasta,$dcov,$dfrac,$dt,$genomics_db,
+my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$refFasta,$dcov,$dfrac,$dt,
     $intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed);
 
 ### ARGUMENTS WITH DEFAULT
@@ -40,7 +40,7 @@ GetOptions (
 	"i|in=s"													=>	\$in,
 	"o|out=s"													=>	\$outDir,
 	"r|ref=s"													=>	\$refFasta,
-	"D|genomicsdb|db=s"								=>	\$genomics_db,
+#	"D|genomicsdb|db=s"								=>	\$genomics_db,
 	"l|log=s"													=>	\$logOut,
 
 	"t|threads|ncpu=i"								=>	\$ncpu,
