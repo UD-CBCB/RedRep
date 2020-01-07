@@ -7,7 +7,7 @@
 
 # Location of RedRep installation.  Main scripts (redrep-xxxx.pl) should be in a subdirectory named "bin",
 # accessory scripts in a subdirectory named "bin/util", and libraries in a subdirectory named "lib".
-REDREP_INSTALL=~/00-scripts/redrep/active-git/GATK4-compatibility/RedRep
+REDREP_INSTALL=/home/redrep/RedRep_2.2/
 
 # shared/network file system (NFS, lustre, etc)?  0=no, 1=yes.  If running on a cluster leave at 1.  If running on a stand-alone machine that never accesses external storage, may be set to 0.  If in doubt, leave at 1.
 SHARED_FS=1

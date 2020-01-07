@@ -643,7 +643,7 @@ sub read_fofn {
 	#logentry("Parsing files from FOFN $infile",4);
 	my @files=read_listfile($infile);
 	foreach my $file (@files) {
-		unless (-e $_ && -f $_) {
+		unless (-e $file && -f $file) {
 			logentry_then_die("File ($file) specified in FOFN $infile does not exist!");
 		}
 	}
