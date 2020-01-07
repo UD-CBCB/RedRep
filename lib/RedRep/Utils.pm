@@ -1,6 +1,6 @@
 package RedRep::Utils;
 
-my $ver="RedRep::Utils Ver. 2.2 [10/28/2019 rev]";
+my $ver="RedRep::Utils Ver. 2.22 [01/07/2020 rev]";
 
 use strict;
 use lib $ENV{'REDREPLIB'};

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-genotyper.pl Ver. 2.21 [12/23/2019 rev]";
+my $ver="redrep-genotyper.pl Ver. 2.22 [01/07/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
