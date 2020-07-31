@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-qc.pl Ver. 2.2 [10/28/2019 rev]";
+my $ver="redrep-qc.pl Ver. 2.3 [3/20/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -144,8 +144,10 @@ logentry("SCRIPT STARTED ($ver)",2);
 $tmpdir								=	get_tmpdir($tmpdir);
 my $intermed					=	"$tmpdir/intermed";
 $intermed							=	"$outDir/intermed" if($tmp_in_outdir);
+my $stage_dir					=	$tmpdir."input/";
 
 mkdir($intermed);
+mkdir($stage_dir);
 
 ### INITIATE LOG
 logentry("Command: $0 $script\n",2);
@@ -205,6 +207,20 @@ my $dir_filter=$outDir."/8-filter";
 my $dir_final_deconv=$outDir."/final-trimmed-deconv";
 my $dir_final_concat=$outDir."/final-trimmed-concat";
 my $dir_postQC=$outDir."/post-fastqc";
+
+
+### STAGE Files
+if($stage) {
+	logentry("STAGING FILES TO $tmpdir",3);
+	my @f;
+	push(@f, $inFile);
+	push(@f, $inFile2) if($inFile2);
+	@f=stage_files($stage_dir,\@f);
+	$inFile=shift(@f);
+	$inFile2=shift(@f) if ($inFile2);
+	logentry("Input fastq file(s) staged to $stage_dir",4);
+}
+
 
 
 ### STEP 1 -- READ METADATA FILE
@@ -1164,6 +1180,8 @@ Displays the current version.
 
 =item 2.2 - 10/28/2019: Reversed QC report parameters, now default is no pre or post QC report.  Many enhancements including parallelization, documentation, and logging.
 
+=item 2.3 - 3/20/2020: Fixed input file staging
+
 =back
 
 =head1 DEPENDENCIES
@@ -1190,7 +1208,7 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2019 Shawn Polson, Randall Wisser, Keith Hopper.
+Copyright 2012-2020 Shawn Polson, Randall Wisser, Keith Hopper.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
