@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-SNPcall.pl Ver. 2.2 [10/28/2019 rev]";
+my $ver="redrep-SNPcall.pl Ver. 2.3 [07/31/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -293,7 +293,7 @@ redrep-SNPcall.pl -- De novo clustering of reduced representation libraries
 
 =head1 SYNOPSIS
 
- redrep-SNPcall.pl --in FILE_OR_DIR_NAME --out DIRNAME [PARAMETERS]
+ redrep-SNPcall.pl --in FILE_OR_DIR_NAME --out DIRNAME --ref REFERENCE_FASTA [PARAMETERS]
                      [--help] [--manual]
 =head1 DESCRIPTION
 

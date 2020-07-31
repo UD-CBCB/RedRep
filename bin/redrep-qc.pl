@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-qc.pl Ver. 2.3 [3/20/2020 rev]";
+my $ver="redrep-qc.pl Ver. 2.3 [07/31/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;

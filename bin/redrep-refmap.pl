@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-refmap.pl Ver. 2.2 [10/28/2019 rev]";
+my $ver="redrep-refmap.pl Ver. 2.3 [07/31/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -261,7 +261,7 @@ redrep-refmap.pl -- De novo clustering of reduced representation libraries
 
 =head1 SYNOPSIS
 
- redrep-refmap.pl --in FILE_OR_DIR_NAME --out DIRNAME [PARAMETERS]
+ redrep-refmap.pl --in FILE_OR_DIR_NAME --out DIRNAME --ref REFERENCE_FASTA [PARAMETERS]
                      [--help] [--manual]
 
 =head1 DESCRIPTION
