@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-genotyper.pl Ver. 2.22 [01/07/2020 rev]";
+my $ver="redrep-genotyper.pl Ver. 2.3 [07/31/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -29,7 +29,7 @@ use Data::Dumper;
 sub split_in_files;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db);
+my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db,$no_geno);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -41,6 +41,7 @@ my $javaarg="";
 my $gatkarg_GenotypeGVCFs="";
 my $gatkarg_GenomicsDBImport="";
 my $gatkarg_CombineGVCFs="";
+my $gdb_append=0;
 
 
 GetOptions (
@@ -61,7 +62,8 @@ GetOptions (
 	"gatk_GenomicsDBImport=s"					=>	\$gatkarg_GenomicsDBImport,
 	"L|intervals=s"										=>	\$intervals,
 	"D|genomicsdb|db:s"								=>	\$genomics_db,
-	"gdb_batchsize"										=>	\$gdb_batchsize,
+	"gdb_batchsize=i"									=>	\$gdb_batchsize,
+	"no_geno"													=>	\$no_geno,
 
 	"f|force"													=>	\$force,
 	"d|debug:+"												=>	\$debug,
@@ -263,44 +265,47 @@ logentry("Checking External Dependencies",3);
 		$genomics_db="gendb://".$genomics_db;
 	}
 
-
 	my $gvcf_files = build_argument_list(\@files,"--variant");
 
-	logentry("BEGIN GENOTYPING",3);
-	foreach my $interval(@intervals) {
-		$manager->start and next;
-		my $geno_in;
-		if($genomics_db) {
-			$geno_in=$genomics_db;
-		}
-		else {
-			logentry("Beginning CombineGVCFs on interval $interval",4);
-			my $interval_gvcf_out="$interval_gvcf_dir/interval-$interval.g.vcf";
-			$sys=cmd("$gatk CombineGVCFs --reference $refFasta --intervals $interval $gvcf_files --output $interval_gvcf_out --tmp-dir $tmpdir $gatkarg_CombineGVCFs","Calling GATK CombineGCVFs");
-			logentry("Completed CombineGVCFs on interval $interval",4);
-			$geno_in=$interval_gvcf_out;
-		}
+	unless($no_geno) {
+		logentry("BEGIN GENOTYPING",3);
+		foreach my $interval(@intervals) {
+			$manager->start and next;
+			my $geno_in;
+			if($genomics_db) {
+				$geno_in=$genomics_db;
+			}
+			else {
+				logentry("Beginning CombineGVCFs on interval $interval",4);
+				my $interval_gvcf_out="$interval_gvcf_dir/interval-$interval.g.vcf";
+				$sys=cmd("$gatk CombineGVCFs --reference $refFasta --intervals $interval $gvcf_files --output $interval_gvcf_out --tmp-dir $tmpdir $gatkarg_CombineGVCFs","Calling GATK CombineGCVFs");
+				logentry("Completed CombineGVCFs on interval $interval",4);
+				$geno_in=$interval_gvcf_out;
+			}
 
-		my $interval_vcf_out="$interval_vcf_dir/interval-$interval.vcf";
-		logentry("Beginning GenotypeGVCFs on interval $interval",4);
-		$sys=cmd("$gatk GenotypeGVCFs --reference $refFasta --intervals $interval --variant $geno_in --output $interval_vcf_out --tmp-dir $tmpdir $gatkarg_GenotypeGVCFs","Calling GATK GenotypeGCVFs");
-		logentry("Completed GenotypeGVCFs on interval $interval",4);
-		$manager->finish;
+			my $interval_vcf_out="$interval_vcf_dir/interval-$interval.vcf";
+			logentry("Beginning GenotypeGVCFs on interval $interval",4);
+			$sys=cmd("$gatk GenotypeGVCFs --reference $refFasta --intervals $interval --variant $geno_in --output $interval_vcf_out --tmp-dir $tmpdir $gatkarg_GenotypeGVCFs","Calling GATK GenotypeGCVFs");
+			logentry("Completed GenotypeGVCFs on interval $interval",4);
+			$manager->finish;
+		}
+		$manager->wait_all_children;
+		logentry("COMPLETE GENOTYPING",3);
+
+
+		# MAKE INTERVAL VCF OUTPUT FOFN
+		my @interval_vcf_outs=get_dir_filelist($interval_vcf_dir,qr/\.vcf$/);
+		build_fofn(\@interval_vcf_outs,$interval_vcfs_fofn);
+
+
+		# MERGE VCFs
+		logentry("MERGING VCFs",3);
+		$sys=cmd("$gatk MergeVcfs --INPUT $interval_vcfs_fofn --OUTPUT $combined_vcf_out --TMP_DIR $tmpdir","Calling GATK MergeVcfs");
+		logentry("VCF MERGE COMPLETE",3);
 	}
-	$manager->wait_all_children;
-	logentry("COMPLETE GENOTYPING",3);
-
-
-	# MAKE INTERVAL VCF OUTPUT FOFN
-	my @interval_vcf_outs=get_dir_filelist($interval_vcf_dir,qr/\.vcf$/);
-	build_fofn(\@interval_vcf_outs,$interval_vcfs_fofn);
-
-
-	# MERGE VCFs
-	logentry("MERGING VCFs",3);
-	$sys=cmd("$gatk MergeVcfs --INPUT $interval_vcfs_fofn --OUTPUT $combined_vcf_out --TMP_DIR $tmpdir","Calling GATK MergeVcfs");
-	logentry("VCF MERGE COMPLETE",3);
-
+	else {
+		logentry("SKIPPING GENOTYPING: option --no_geno specified",3);
+	}
 
 	# FILE CLEAN UP
 	logentry("FILE CLEAN UP",3);
@@ -386,6 +391,10 @@ Reference FASTA. (Required)
 =item B<-D,--genomicsdb,--db>=DIRECTORY_NAME
 
 If specified inputs will be imported into a GATK GenomicsDB before genotyping (typically speeds analysis significantly, but may fail with large numbers of inputs or intervals/contigs.).  If the directory does not exist, a new GenomicsDB will be created.  If the directory exists and is a valid genomicsDB, then inputs will be added to the existing database.
+
+=item B<--no_geno>
+
+If specified Genotyping will be skipped.  Most likely use would be to add variants to GenomicsDB without running genotyping.
 
 =item B<--gdb_batchsize>=integer
 
