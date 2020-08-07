@@ -243,9 +243,14 @@ my %p1_p2_ind;	# hash of arrays mapping p1_index_seq (key) to p2_index_seq (valu
 		{	chomp;
 			my @fields=split(/\t/,$_);
 			my %temp;
-			for(my $i=0; $i<scalar(@fieldnames); $i++)
-			{	if(grep(/^$fieldnames[$i]$/,@targetfields) && ! grep(/$fields[$i]/,@excludes))
-				{	$temp{$fieldnames[$i]}=$fields[$i];
+			for(my $i=0; $i<scalar(@fieldnames); $i++) {
+				if(grep(/^$fieldnames[$i]$/,@targetfields)) {
+					if(! grep(/$fields[$i]/,@excludes)) {
+						$temp{$fieldnames[$i]}=$fields[$i];
+					}
+				}
+				else {
+					logentry_then_die("ERROR: Required field name $fieldnames[$i] is not contained in the metadata file.");
 				}
 			}
 
@@ -266,6 +271,9 @@ my %p1_p2_ind;	# hash of arrays mapping p1_index_seq (key) to p2_index_seq (valu
 		else
 		{	chomp;
 			@fieldnames=split(/\t/,$_);
+			my $fn_size=scalar(@fieldnames);
+			my $tf_size=scalar(@targetfields);
+			logentry_then_die("ERROR: Metadata file has too few fields ($fn_size).  File must contain at least the required $tf_size fields: ".join(', ',@targetfields).".");
 		}
 	}
 	close(META);
