@@ -1180,7 +1180,7 @@ Displays the current version.
 
 =item 2.2 - 10/28/2019: Reversed QC report parameters, now default is no pre or post QC report.  Many enhancements including parallelization, documentation, and logging.
 
-=item 2.3 - 3/20/2020: Fixed input file staging
+=item 2.3 - 8/1/2020: Fixed input file staging and disk space reporting bugs.
 
 =back
 
