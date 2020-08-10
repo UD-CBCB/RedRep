@@ -1,6 +1,6 @@
 package RedRep::Utils;
 
-my $ver="RedRep::Utils Ver. 2.3 [07/31/2020 rev]";
+my $ver="RedRep::Utils Ver. 2.3 [08/07/2020 rev]";
 
 use strict;
 use lib $ENV{'REDREPLIB'};
@@ -10,15 +10,18 @@ use POSIX qw(strftime);
 use Cwd qw(abs_path cwd);
 use File::Basename qw(fileparse dirname);
 use File::Copy qw(copy move);
+use File::Copy::Recursive qw(dircopy);
 use File::Path qw(make_path remove_tree);
+use File::stat;
 use File::Which qw(which);
 use String::Random;
 use Time::Seconds;
 #use IO::Zlib;
 
-our @EXPORT    = qw(check_dependency check_ref_fasta cmd find_job_info get_dir_filelist get_path_bwa get_path_gatk get_path_samtools get_tmpdir logentry logentry_then_die script_time stage_files);
-our @EXPORT_OK = qw(avgQual build_argument_list build_contig_list build_fasta_dictionary build_fasta_index build_fofn build_listfile build_vcf_index check_jar cmd_STDOUT concat countFastq check_genomicsdb get_timestamp IUPAC2regexp IUPAC_RC read_fodn read_fofn read_listfile retrieve_contigs round split_in_files);
+our @EXPORT    = qw(check_dependency check_ref_fasta cmd find_job_info get_dir_filelist get_path_bwa get_path_gatk get_path_samtools get_tmpdir logentry logentry_then_die script_time stage_files stage_gdb);
+our @EXPORT_OK = qw(archive_gdb avgQual build_argument_list build_contig_list build_fasta_dictionary build_fasta_index build_fofn build_listfile build_vcf_index check_jar cmd_STDOUT concat countFastq check_genomicsdb gdb_history get_timestamp IUPAC2regexp IUPAC_RC read_fodn read_fofn read_listfile retrieve_contigs round split_in_files tarball_dir);
 
+sub archive_gdb;
 sub avgQual;
 sub build_argument_list;
 sub build_contig_list;
@@ -36,6 +39,7 @@ sub cmd_STDOUT;
 sub concat;
 sub countFastq;
 sub find_job_info;
+sub gdb_history;
 sub get_dir_filelist;
 #sub get_execDir;
 sub get_path_bwa;
@@ -55,6 +59,8 @@ sub round;
 sub script_time;
 sub split_in_files;
 sub stage_files;
+sub stage_gdb;
+sub tarball_dir;
 
 #internal functions
 sub _sub_info;
@@ -71,6 +77,38 @@ sub avgQual {
 	my $len=length($qstr);
 	my $qavg=round($qstr_sum/$len,1);
 	return ($qavg,$len);
+}
+
+
+#######################################
+### archive_gdb
+# Create an archived copy of a GenomicsDB and remove original.
+sub archive_gdb {
+	my $source=shift;
+	$source=~s!/+$!!;  # remove any trailing slashes
+
+	my ($target_dir,$source_stub)=($source =~ m{^(.*)/([^/]+)$});
+	$target_dir="./" if (! $target_dir);
+
+	my $mod_time=(stat($source))[9];
+	my $timestamp=get_timestamp($mod_time);
+	my $error;
+	my $tarball;
+	my $archive_dir="${$target_dir}/${source_stub}-${timestamp}";
+	eval { make_path($archive_dir) } or do { $error="Could not create temporary directory $archive_dir for archiving.  " };
+	eval { copy("${source}.history",$archive_dir) } or do { $error.="Could not copy original genomicsDB history ${source}.history to $archive_dir for archiving.  " } if(-e "${source}.history");
+	eval { move($source,"${archive_dir}/${source_stub}") } or do { $error.="Could not move original genomicsDB $source to $archive_dir for archiving.  " };
+	eval { $tarball=tarball_dir($archive_dir,$target_dir) } or do { $error.="Could not create tarball of $archive_dir: $@" };
+	eval { remove_tree($archive_dir) } or do { $error.="Could not delete temporary directory $archive_dir.  " };
+
+	# if anything failed on file ops, then warn and return 1 to tell main to not overwrite the original genomics db (which is still present)
+	if($error) {
+		logentry_then_die("Error(s) occurred while attempting to archive the original genomicsDB $source.  $error",2);
+	}
+	# otherwise return 0 to indicate to main that original genomicsDB has been archived and removed.
+	else {
+		logentry("The original genomicsDB $source has been successfully archived to $tarball.");
+	}
 }
 
 
@@ -208,14 +246,25 @@ sub check_dependency {
 # Also removes gendb prefix if present and returns new path
 sub check_genomicsdb {
 	my $in=shift;
+	my $db_input=shift;
+	my $err_msg;
+	my $err_msg_pre;
+	if($db_input) {
+		$err_msg_pre="Directory ($in) specified as --in, ";
+	}
+	else {
+		$err_msg_pre="GenomicsDB location specified in --genomicsDB ($in), ";
+	}
 	$in =~ s/^gendb\:\/\///;
 	if(-e $in && -d $in) {
 	 	unless(-f "$in/callset.json") {
-			logentry_then_die("GenomicsDB option selected, location ($in) exists but does not seem to be a genomicsDB.  If this is meant to be a new genomicsDB, the directory specified must not exist.");
+			my $err_msg="${err_msg_pre}, location exists but does not seem to be a valid genomicsDB.";
+			$err_msg.="  If this is meant to be a new genomicsDB, the directory specified must not exist." if (! $db_input);
+			logentry_then_die($err_msg);
 		}
 	}
 	else {
-		logentry_then_die("GenomicsDB option selected, but location specified ($in) does not exist or is not a directory.");
+		logentry_then_die("${err_msg_pre}, but does not exist or is not a directory.");
 	}
 	return $in;
 }
@@ -279,17 +328,15 @@ sub check_jar {
 sub cmd {
 	my $cmd=shift;
 	my $message=shift;
+	my $no_die=shift;
 
 	logentry("System call ($message): $cmd",7);
 
 	my $sys=`$cmd 2>&1`;
 	my $err=$?;
+
 	if ($err) {
 		logentry_then_die("While trying to run a shell command.  Details:\ncommand: $cmd\nError Code: $err\nError message:\n$sys");
-	}
-	else {
-		chomp($message);
-		logentry("STDOUT ($message): $sys",9);
 	}
 	return $sys;
 }
@@ -391,6 +438,39 @@ return $info;
 
 
 #######################################
+### gdb_history
+# Make and/or append to a genomicsDB history file.
+sub gdb_history {
+	my $gdb=shift;
+	my $log_path=shift;
+	my @in=@{(shift)};
+
+	$gdb=~s!/+$!!;  # remove any trailing slashes
+
+	my $sep;
+	my $message="Adding Files ".join(", ", @in).".  Job logged at $log_path.";
+	my $warn;
+
+	if (-e "${gdb}.history") {
+		$sep="Appending to genomicsDB $gdb: ";
+	}
+	elsif (-e "${gdb}") {
+		$warn="WARNING: GenomicsDB located without an associated history file.  This history file is incomplete!\n";
+		logentry("WARNING: GenomicsDB located without an associated history file.  Creating new history file: history chain will be incomplete.",2);
+		$sep="Appending to genomicsDB $gdb: Adding files ";
+	}
+	else {
+		$sep="Creating genomicsDB $gdb: ";
+	}
+
+	open(my $HIST,">> ${gdb}.history");
+	print $HIST $warn if($warn);
+	print $HIST POSIX::strftime("%m/%d/%Y %H:%M:%S $sep $message\n", localtime);
+	close($HIST);
+}
+
+
+#######################################
 ### get_dir_filelist
 # open directory and return list of file paths matching a regexp pattern (case insensitive)
 sub get_dir_filelist {
@@ -437,8 +517,10 @@ sub get_path_samtools {
 #######################################
 ### get_timestamp
 # get timestamp suitable for filename
+# example get_timestamp(time); would get current time
 sub get_timestamp {
-    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=localtime(time);
+		my $time=shift;
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=localtime($time);
     my $timestamp = sprintf ( "%04d%02d%02d_%02d%02d%02d", $year+1900,$mon+1,$mday,$hour,$min,$sec);
     return $timestamp;
 }
@@ -772,6 +854,26 @@ sub stage_files {
 
 
 #######################################
+### stage_gdb
+# Stage genomicsDB (or any directory) to a target location
+sub stage_gdb {
+	my $source = shift;
+	my $target_base = shift;
+	$source =~ m{/?([^/]+)/?$};
+	my $target=$target_base."/".$1;
+
+	#If exists stage the directory . . . if not only return the staged path
+	if(-e $source) {
+		dircopy($source,$target) || logentry_then_die("Directory $source could not be copied to tmpdir $target.  Ensure directory exists and that tmpdir has sufficient space.");
+	}
+	else {
+		logentry("GenomicsDB $source does not exist.  Setting staged path for new GenomicsDB: $target.",4);
+	}
+	return($target);
+}
+
+
+#######################################
 ### _sub_info
 # Can be added at beginning of function to log information about function calls.
 # Can be useful for debugging.  Must use --verbose=12 or higher
@@ -783,6 +885,26 @@ sub _sub_info {
 	my $args=join(",",@arr);
 	logentry("$sub($args)",12);
 }
+
+
+#######################################
+### tarball_dir
+# Create an archived copy of a directory
+# Uses pigz to compress if present, otehrwise gzip
+# system must have tar command
+sub tarball_dir {
+	my $source=shift;
+	my $target_dir=shift;
+	my $ncpu=${main::ncpu};
+	my ($source_stub)=($source =~ m{/?([^/]+)/?$});
+	my $error;
+	my $gzip="gzip";
+	my $pigz=check_dependency("pigz","--version");
+	$gzip="${pigz} --best --recursive -p $ncpu" if($pigz && $ncpu>1);
+	eval { my $sys=cmd("tar --use-compress-program='$gzip' -cf ${target_dir}/${source_stub}.tar.gz $source","Compressing copy of $source",1) } || die($@);
+	return "${target_dir}/${source_stub}.tar.gz";
+}
+
 
 
 __END__
@@ -810,6 +932,8 @@ version 2.11
  use RedRep::utils qw(avgQual check_dependency check_jar cmd cmd_STDOUT concat countFastq find_job_info IUPAC2regexp IUPAC_RC logentry logentry_then_die round);
 
 =head1 MODULES
+
+=head2 archive_gdb
 
 =head2 avgQual
 
@@ -853,6 +977,8 @@ version 2.11
 
 =head2 stage_files
 
+=head2 stage_gdb
+
 =head2 round
 
 =head1 VERSION HISTORY
@@ -864,6 +990,8 @@ version 2.11
 =item 2.11 - 10/9/2019: Added expanded logging options with verbosity settings added.  Last version with GATK 3.x compatibility.
 
 =item 2.2 - 10/28/2019: Added GATK v4 compatibility.  Added genomicsDB compatibility and many other enhancements including parallelization, documentation, and logging.
+
+=item 2.3 - 8/1/2020: Fixed disk space reporting bugs.  Added stage_gdb function.
 
 =back
 
@@ -879,7 +1007,7 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2019 Shawn Polson, Randall Wisser, Keith Hopper.
+Copyright 2012-2020 Shawn Polson, Randall Wisser, Keith Hopper.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.

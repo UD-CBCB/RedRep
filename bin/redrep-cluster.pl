@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-cluster.pl Ver. 2.3 [07/31/2020 rev]";
+my $ver="redrep-cluster.pl Ver. 2.3 [08/07/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -573,6 +573,8 @@ Displays the current version.
 
 =item 2.2 - 10/28/2019: Many enhancements including parallelization, documentation, and logging.
 
+=item 2.3 - 8/1/2020: Fixed disk space reporting bugs.
+
 =back
 
 =head1 DEPENDENCIES
@@ -597,7 +599,7 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2019 Shawn Polson, Randall Wisser, Keith Hopper.
+Copyright 2012-2020 Shawn Polson, Randall Wisser, Keith Hopper.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.

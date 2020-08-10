@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-genotyper.pl Ver. 2.3 [07/31/2020 rev]";
+my $ver="redrep-genotyper.pl Ver. 2.3 [08/07/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -11,7 +11,7 @@ die "ERROR: RedRep Installation Environment Variables not properly defined: REDR
 
 use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
-use RedRep::Utils qw(build_argument_list build_fofn build_listfile build_vcf_index check_genomicsdb get_timestamp read_listfile retrieve_contigs split_in_files);
+use RedRep::Utils qw(archive_gdb build_argument_list build_fofn build_listfile build_vcf_index check_genomicsdb gdb_history get_timestamp read_listfile retrieve_contigs split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
 use Parallel::ForkManager;
 use Pod::Usage;
@@ -29,11 +29,11 @@ use Data::Dumper;
 sub split_in_files;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db,$no_geno);
+my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db,$no_geno,$gvcf_files,$db_load_args,$genomics_db_final);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
-my $ncpu					=	1;
+our $ncpu					=	1;
 my $mem						= 50;						#in GB
 our $verbose			= 4;
 my $gdb_batchsize	=	192;
@@ -61,9 +61,10 @@ GetOptions (
 	"gatk_GenotypeGVCFs=s"						=>	\$gatkarg_GenotypeGVCFs,
 	"gatk_GenomicsDBImport=s"					=>	\$gatkarg_GenomicsDBImport,
 	"L|intervals=s"										=>	\$intervals,
-	"D|genomicsdb|db:s"								=>	\$genomics_db,
+	"D|genomicsdb|db=s"								=>	\$genomics_db,
 	"gdb_batchsize=i"									=>	\$gdb_batchsize,
-	"no_geno"													=>	\$no_geno,
+	"db_load_only"										=>	\$no_geno,
+	"db_load_args"										=>	\$db_load_args,
 
 	"f|force"													=>	\$force,
 	"d|debug:+"												=>	\$debug,
@@ -80,10 +81,10 @@ GetOptions (
 pod2usage(-verbose => 2)  if ($manual);
 pod2usage(-verbose => 1)  if ($help);
 die "\n$ver\n\n" if ($version);
-pod2usage( -msg  => "ERROR!  Argument -i (input file/directory) missing.\n", -exitval => 2) if (! $in);
+pod2usage( -msg  => "ERROR!  Argument -i (input file/directory/db) missing.\n", -exitval => 2) if (! $in);
 pod2usage( -msg  => "ERROR!  Required argument -r (reference fasta) missing.\n", -exitval => 2) if (! $refFasta);
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) missing.\n", -exitval => 2)  if (! $outDir);
-
+pod2usage( -msg  => "ERROR!  Option --genomicsdb must be specified when --db_load_only is used.\n", -exitval => 2)  if ($no_geno && ! $genomics_db);
 
 ### DEBUG MODE
 if($debug) {
@@ -183,41 +184,19 @@ logentry("Checking External Dependencies",3);
 	my $gatk  = get_path_gatk(1);
 	$gatk .= qq( --java-options "$java_opts");
 
+	#DETECT IF TILEDB FILE LOCKING IS DISABLED
+	my $tile_init_state;
+	$tile_init_state=$ENV{'TILEDB_DISABLE_FILE_LOCKING'} if ($ENV{'TILEDB_DISABLE_FILE_LOCKING'});
 
 ############
 ### MAIN
 
 	# SPLIT DIRS, FILES, FOFNs, FODNs, etc
 	logentry("PARSING INPUT",3);
-	my @files;
-	my @vcf_indexes;
-
-	@files=split_in_files($in, qr/\.g\.vcf$/, $gvcf_fofn_out);
-	my $gvcf_count=scalar(@files);
-	logentry("G.VCF FILES DETECTED: ".$gvcf_count,4);
-
-	logentry("CHECKING/BUILDING VCF INDEX FILES",3);
-	foreach my $file (@files) {
-		my $new_file=build_vcf_index($file);
-		push(@vcf_indexes,$new_file);
-	}
-
-	if($stage) {
-		logentry("STAGING FILES TO $tmpdir",3);
-
-		@files=stage_files($stage_dir,\@files);
-		logentry(scalar(@files)." input vcf files staged to $stage_dir",4);
-
-		@vcf_indexes=stage_files($stage_dir,\@vcf_indexes);
-		logentry(scalar(@vcf_indexes)." vcf index files staged to $stage_dir",4);
-
-	}
-
 
 	# Check Reference Fasta and build index and dictionary if necessary
 	check_ref_fasta($refFasta);
 	my @contigs=retrieve_contigs($refFasta);
-
 
 	# Define intervals.  Each interval will be a separate thread.
 	my @intervals;
@@ -234,8 +213,71 @@ logentry("Checking External Dependencies",3);
 	}
 	build_listfile(\@intervals,$interval_list);
 
+	my @files;
+	my @vcf_indexes;
+	my $genomics_db_in;
+	my $gvcf_count;
 
-	if($genomics_db) {
+	# GENOMICSDB INPUT
+	if($in =~ m{^gendb://(.+)$}) {
+		my $in_dir=$1;
+		#push(@files, $in);
+
+		logentry_then_die("GenomicsDB $genomics_db specified as input does not exist.") if (! -e $in_dir);
+		if($stage) {
+			logentry("STAGING FILES TO $tmpdir",3);
+			$in_dir=stage_gdb($in_dir);
+			logentry("GenomicsDB $in staged to $in_dir (for read operations only).",4);
+			logentry("Working copy of GenomicsDB does not appear to be on a shared file system.  Setting environment variable TILEDB_DISABLE_FILE_LOCKING=0",4);
+			$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=0;
+		}
+		$genomics_db="gendb://";
+		$genomics_db.=check_genomicsdb($in_dir,1);
+		$genomics_db_in=1;
+	}
+	#FILE INPUT
+	else {
+		@files=split_in_files($in, qr/\.g\.vcf$/, $gvcf_fofn_out);
+		$gvcf_count=scalar(@files);
+		logentry("G.VCF FILES DETECTED: ".$gvcf_count,4);
+
+		logentry("CHECKING/BUILDING VCF INDEX FILES",3);
+		foreach my $file (@files) {
+			my $new_file=build_vcf_index($file);
+			push(@vcf_indexes,$new_file);
+		}
+
+		if($stage) {
+			logentry("STAGING FILES TO $tmpdir",3);
+
+			@files=stage_files($stage_dir,\@files);
+			logentry(scalar(@files)." input vcf files staged to $stage_dir",4);
+
+			@vcf_indexes=stage_files($stage_dir,\@vcf_indexes);
+			logentry(scalar(@vcf_indexes)." vcf index files staged to $stage_dir",4);
+		}
+
+		$gvcf_files = build_argument_list(\@files,"--variant");
+
+		if($genomics_db) {
+			logentry("SETTING WORKING COPY OF GENOMICS_DB",3);
+			$genomics_db_final=$genomics_db;
+			$genomics_db =~ m{/?([^/]+)/?$};
+			$genomics_db=$intermed."/".$1;
+			if($tmp_in_outdir) {
+				logentry("WARNING: When using --tmp_in_outdir working copy of the genomicsDB will be stored in $outDir, this may cause problems if $outDir is on a shared file system (e.g. NFS).",2);
+				logentry("Working copy of GenomicsDB may be on a shared file system.  Setting environment variable TILEDB_DISABLE_FILE_LOCKING=1.",4);
+				$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=1;
+			}
+			else {
+				logentry("Working copy of GenomicsDB does not appear to be on a shared file system.  Setting environment variable TILEDB_DISABLE_FILE_LOCKING=0.",4);
+				$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=0;
+			}
+		}
+	}
+
+	#LOAD NEW DATA TO GENOMICSDB
+	if($genomics_db && ! $genomics_db_in) {
 		logentry("BEGIN EXPORT TO GATK GENOMICSDB $genomics_db",3);
 		my $db_out_method="--genomicsdb-workspace-path";
 
@@ -246,26 +288,15 @@ logentry("Checking External Dependencies",3);
 
 		# If the database already exists.  Validate and set to add to database.
 		if (-e $genomics_db) {
-			$genomics_db=check_genomicsdb($genomics_db);
+			$genomics_db=check_genomicsdb(${genomics_db});
 			$db_out_method="--genomicsdb-update-workspace-path";
-			my $genomics_db_bak=$genomics_db."-".get_timestamp().".bak";
-			logentry("GenomicsDB specified already exists.  A backup copy will be made ($genomics_db_bak).  Input gvcf files will be appended to existing database.",1);
-			dircopy($genomics_db, $genomics_db_bak) || logentry_then_die("GenomicsDB $genomics_db could not be backed up to $genomics_db_bak.  File could not be created.  Please ensure sufficient disk space and write permissions.");
-			symlink($genomics_db,"$outDir/$genomics_db");
 		}
-#		elsif($genomics_db eq "") {
-#			logentry("GenomicsDB name not specified.  Using default ($outDir/redrep.gatk.db).",1);
-#			$genomics_db="$outDir/redrep.gatk.db";
-#		}
-		else {
-			$genomics_db="$outDir/$genomics_db";
-		}
-		$sys=cmd("$gatk GenomicsDBImport $db_out_method $genomics_db --variant $gvcf_fofn_out --reference $refFasta --intervals $interval_list --batch-size $gdb_batchsize $gatkarg_GenomicsDBImport","Building GenomicsDB: $genomics_db");
+		$sys=cmd("$gatk GenomicsDBImport $db_out_method $genomics_db $db_load_args --variant $gvcf_fofn_out --reference $refFasta --intervals $interval_list --batch-size $gdb_batchsize $gatkarg_GenomicsDBImport","Building GenomicsDB: $genomics_db");
 		logentry("FINISH EXPORT TO GATK GENOMICSDB $genomics_db",3);
 		$genomics_db="gendb://".$genomics_db;
 	}
 
-	my $gvcf_files = build_argument_list(\@files,"--variant");
+
 
 	unless($no_geno) {
 		logentry("BEGIN GENOTYPING",3);
@@ -313,8 +344,38 @@ logentry("Checking External Dependencies",3);
 		logentry("Saving intermediate tmp directory",4);
 		$sys=dircopy($intermed, "$outDir/intermed");
 	}
+
+	if(-e $genomics_db_final) {
+		logentry("Archiving original genomicsDB",4);
+		eval { archive_gdb($genomics_db_final) } or
+		do {
+			logentry("Could not archive original genomicsDB $genomics_db_final.",2);
+			until(! -e $genomics_db_final) {
+				$genomics_db_final="${genomics_db_final}.new";
+			}
+			logentry("Saving genomicsDB to alternate location $genomics_db_final.",2);
+		};
+	}
+	logentry("Moving genomicsDB to output location",4);
+	gdb_history($genomics_db_final,$logOut,@files);
+	move($genomics_db,$genomics_db_final);
+	if($genomics_db_final !~ /$outDir/) {
+		$genomics_db_final =~ m{/?([^/]+)/?$};
+		symlink($genomics_db_final,"$outDir/$1");
+	}
+
+
 	logentry("Removing tmp files",4);
 	$sys=remove_tree($tmpdir);
+
+
+	# RETURN ENVIRONMENT VARIABLES TO INITIAL STATE
+	if($tile_init_state) {
+		$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=$tile_init_state;
+	}
+	elsif($ENV{'TILEDB_DISABLE_FILE_LOCKING'}) {
+		delete $ENV{'TILEDB_DISABLE_FILE_LOCKING'};
+	}
 
 
 	### WRAP UP
@@ -360,7 +421,7 @@ Accepts bam output from redrep-refmap.pl and fasta-formatted reference sequence(
 
 =item B<-i, --in>=FILENAME
 
-Input GVCF(s).  (Required)
+Input GVCF(s) or GenomicsDB.  (Required)
 
 Can be one of the folllowing formats:
 
@@ -369,6 +430,7 @@ Can be one of the folllowing formats:
 3. Path to one or more directories of g.vcf files (comma separated)
 4. Path to one or more FODN files (file with complete paths to directories containing one or more g.vcf files -- 1 directory per line; must have ".fodn" or ".fodn.list" extension)
 5. Comma separated list of any combination of 1-4.
+6. An existing GenomicsDB (must include the prefix gendb://)
 
 NOTE: Additional (or alternative) inputs can be included in an existing GATK genomicsDB (see --genomicdb)
 
@@ -390,11 +452,11 @@ Reference FASTA. (Required)
 
 =item B<-D,--genomicsdb,--db>=DIRECTORY_NAME
 
-If specified inputs will be imported into a GATK GenomicsDB before genotyping (typically speeds analysis significantly, but may fail with large numbers of inputs or intervals/contigs.).  If the directory does not exist, a new GenomicsDB will be created.  If the directory exists and is a valid genomicsDB, then inputs will be added to the existing database.
+If specified inputs will be imported into a GATK GenomicsDB before genotyping (typically speeds analysis significantly, but may fail with large numbers of inputs or intervals/contigs.).  If the directory does not exist, a new GenomicsDB will be created.  If the directory exists and is a valid genomicsDB, then inputs will be added to the existing database.  Parameter has no effect if the --in is a genomicsDB.
 
-=item B<--no_geno>
+=item B<--db_load_only>
 
-If specified Genotyping will be skipped.  Most likely use would be to add variants to GenomicsDB without running genotyping.
+Use to load data to genomics db only (genotyping will be skipped).  If specified the parameter --genomicsdb is also required.
 
 =item B<--gdb_batchsize>=integer
 
@@ -494,6 +556,8 @@ Displays the current version.
 
 =item 2.2 - 10/28/2019: Added GATK v4 compatibility.  Added genomicsDB compatibility and many other enhancements including parallelization, documentation, and logging.
 
+=item 2.3 - 8/7/2020: Fixed disk space reporting and gdb_batchsize bugs.  Added --db_load_only.  Added genomicsDB batching and staging capabilities.
+
 =back
 
 =head1 DEPENDENCIES
@@ -526,7 +590,7 @@ Report bugs to polson@udel.edu
 
 =head1 COPYRIGHT
 
-Copyright 2012-2019 Shawn Polson, Randall Wisser, Keith Hopper.
+Copyright 2012-2020 Shawn Polson, Randall Wisser, Keith Hopper.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
