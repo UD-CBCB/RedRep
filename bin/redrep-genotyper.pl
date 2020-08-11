@@ -145,8 +145,8 @@ my $interval_list			=	$intermed."/interval.list";
 my $interval_vcfs_fofn=	$intermed."/interval_vcfs.fofn.list";
 
 $genomics_db =~ s!^gendb://!!;        # remove gendb prefix if present
-$genomics_db = "${outDir}/${genomics_db}" if($genomics_db !~ m!/!)    # place in outDir if no path given
-my $genomics_db_final=$genomics_db;
+$genomics_db = "${outDir}/${genomics_db}" if($genomics_db !~ m!/!);    # place in outDir if no path given
+my $genomics_db_final=$genomics_db;		# keep this version as final output location
 
 mkdir($intermed) || logentry_then_die("Can't create temporary directory $intermed");
 mkdir($interval_gvcf_dir) || logentry_then_die("Can't create temporary directory $interval_gvcf_dir");
