@@ -255,7 +255,7 @@ sub check_genomicsdb {
 	else {
 		$err_msg_pre="GenomicsDB location specified in --genomicsDB ($in), ";
 	}
-	$in =~ s/^gendb\:\/\///;
+	$in =~ s!^gendb://!!;
 	if(-e $in && -d $in) {
 	 	unless(-f "$in/callset.json") {
 			my $err_msg="${err_msg_pre}, location exists but does not seem to be a valid genomicsDB.";
@@ -445,7 +445,7 @@ sub gdb_history {
 	my $log_path=shift;
 	my @in=@{(shift)};
 
-	$gdb=~s!/+$!!;  # remove any trailing slashes
+	$gdb =~ s!/+$!!;  # remove any trailing slashes
 
 	my $sep;
 	my $message="Adding Files ".join(", ", @in).".  Job logged at $log_path.";

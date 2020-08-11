@@ -181,7 +181,7 @@ logentry("Checking External Dependencies",3);
 
 	# java
 	#our $java=check_dependency("java","-version","s/\r?\n/ | /g");    #not currently needed; retain for future
-	my $java_opts = "-Xmx${mem}g $javaarg -d64";
+	my $java_opts = "-Xmx${mem}g $javaarg ";
 
 	# samtools
 	my $samtools = get_path_samtools(1);

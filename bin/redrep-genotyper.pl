@@ -29,7 +29,7 @@ use Data::Dumper;
 sub split_in_files;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db,$no_geno,$gvcf_files,$db_load_args,$genomics_db_final);
+my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db,$no_geno,$gvcf_files,$db_load_args);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -144,6 +144,10 @@ my $contig_list				= $intermed."/contig.list";
 my $interval_list			=	$intermed."/interval.list";
 my $interval_vcfs_fofn=	$intermed."/interval_vcfs.fofn.list";
 
+$genomics_db =~ s!^gendb://!!;        # remove gendb prefix if present
+$genomics_db = "${outDir}/${genomics_db}" if($genomics_db !~ m!/!)    # place in outDir if no path given
+my $genomics_db_final=$genomics_db;
+
 mkdir($intermed) || logentry_then_die("Can't create temporary directory $intermed");
 mkdir($interval_gvcf_dir) || logentry_then_die("Can't create temporary directory $interval_gvcf_dir");
 mkdir($interval_vcf_dir) || logentry_then_die("Can't create temporary directory $interval_vcf_dir");
@@ -175,7 +179,7 @@ logentry("Checking External Dependencies",3);
 
 	# java
 	#our $java=check_dependency("java","-version","s/\r?\n/ | /g");    #not currently needed; retain for future
-	my $java_opts = "-Xmx${mem}g $javaarg -d64";
+	my $java_opts = "-Xmx${mem}g $javaarg ";
 
 	# samtools
 	my $samtools = get_path_samtools(1);
@@ -261,7 +265,6 @@ logentry("Checking External Dependencies",3);
 
 		if($genomics_db) {
 			logentry("SETTING WORKING COPY OF GENOMICS_DB",3);
-			$genomics_db_final=$genomics_db;
 			$genomics_db =~ m{/?([^/]+)/?$};
 			$genomics_db=$intermed."/".$1;
 			if($tmp_in_outdir) {
@@ -357,11 +360,12 @@ logentry("Checking External Dependencies",3);
 		};
 	}
 	logentry("Moving genomicsDB to output location",4);
-	gdb_history($genomics_db_final,$logOut,@files);
+	gdb_history($genomics_db_final,$logOut,\@files);
 	move($genomics_db,$genomics_db_final);
 	if($genomics_db_final !~ /$outDir/) {
 		$genomics_db_final =~ m{/?([^/]+)/?$};
 		symlink($genomics_db_final,"$outDir/$1");
+		symlink("${genomics_db_final}.history","${outDir}/$1.history");
 	}
 
 

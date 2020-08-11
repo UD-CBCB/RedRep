@@ -152,7 +152,7 @@ logentry("Checking External Dependencies",3);
 
 	# java
 	#our $java=check_dependency("java","-version","s/\r?\n/ | /g",1);
-	my $java_opts = "-Xmx${mem}g $javaarg -d64";
+	my $java_opts = "-Xmx${mem}g $javaarg ";
 
 	# bwa
 	my $bwa=get_path_bwa(1);
