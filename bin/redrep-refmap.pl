@@ -13,6 +13,7 @@ use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
 use RedRep::Utils qw(cmd_STDOUT split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
+use Carp qw(cluck confess longmess);
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
 use File::Copy::Recursive qw(dircopy);
@@ -109,7 +110,7 @@ if(-d $outDir)
 
 
 ### CREATE OUTPUT DIR AND OPEN LOG
-mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
+mkdir($outDir) || confess("ERROR: Can't create output directory $outDir");
 $logOut="$outDir/log.refmap.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
 logentry("SCRIPT STARTED ($ver)",2);

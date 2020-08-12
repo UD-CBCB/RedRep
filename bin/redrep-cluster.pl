@@ -13,6 +13,7 @@ use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
 #use RedRep::Utils qw();
 use Getopt::Long qw(:config no_ignore_case);
+use Carp qw(cluck confess longmess);
 use Pod::Usage;
 use File::Basename qw(fileparse);
 use File::Copy qw(copy move);
@@ -132,7 +133,7 @@ if(-d $outDir)
 
 
 ### CREATE OUTPUT DIR AND OPEN LOG
-mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
+mkdir($outDir) || confess("ERROR: Can't create output directory $outDir");
 $logOut="$outDir/log.cluster.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
 logentry("SCRIPT STARTED ($ver)",2);

@@ -13,6 +13,7 @@ use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
 use RedRep::Utils qw(build_argument_list build_contig_list read_fofn read_listfile split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
+use Carp qw(cluck confess longmess);
 use Parallel::ForkManager;
 use Pod::Usage;
 use POSIX qw(ceil floor);
@@ -111,7 +112,7 @@ if(-d $outDir)
 
 
 ### CREATE OUTPUT DIR AND OPEN LOG
-mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
+mkdir($outDir) || confess("ERROR: Can't create output directory $outDir");
 $logOut="$outDir/log.SNPcall.txt" if (! $logOut);
 open(our $LOG,">",$logOut);
 logentry("SCRIPT STARTED ($ver)",2);
