@@ -1,12 +1,13 @@
 package RedRep::Utils;
 
-my $ver="RedRep::Utils Ver. 2.3 [08/07/2020 rev]";
+my $ver="RedRep::Utils Ver. 2.3 [08/12/2020 rev]";
 
 use strict;
 use lib $ENV{'REDREPLIB'};
 use Exporter qw(import);
 use Pod::Usage;
 use POSIX qw(strftime);
+use Carp qw(cluck confess longmess);
 use Cwd qw(abs_path cwd);
 use File::Basename qw(fileparse dirname);
 use File::Copy qw(copy move);
@@ -85,29 +86,34 @@ sub avgQual {
 # Create an archived copy of a GenomicsDB and remove original.
 sub archive_gdb {
 	my $source=shift;
-	$source=~s!/+$!!;  # remove any trailing slashes
-
-	my ($target_dir,$source_stub)=($source =~ m{^(.*)/([^/]+)$});
-	$target_dir="./" if (! $target_dir);
-
-	my $mod_time=(stat($source))[9];
-	my $timestamp=get_timestamp($mod_time);
 	my $error;
 	my $tarball;
-	my $archive_dir="${$target_dir}/${source_stub}-${timestamp}";
-	eval { make_path($archive_dir) } or do { $error="Could not create temporary directory $archive_dir for archiving.  " };
-	eval { copy("${source}.history",$archive_dir) } or do { $error.="Could not copy original genomicsDB history ${source}.history to $archive_dir for archiving.  " } if(-e "${source}.history");
-	eval { move($source,"${archive_dir}/${source_stub}") } or do { $error.="Could not move original genomicsDB $source to $archive_dir for archiving.  " };
-	eval { $tarball=tarball_dir($archive_dir,$target_dir) } or do { $error.="Could not create tarball of $archive_dir: $@" };
-	eval { remove_tree($archive_dir) } or do { $error.="Could not delete temporary directory $archive_dir.  " };
 
-	# if anything failed on file ops, then warn and return 1 to tell main to not overwrite the original genomics db (which is still present)
-	if($error) {
-		logentry_then_die("Error(s) occurred while attempting to archive the original genomicsDB $source.  $error",2);
+	$source=~s!/+$!!;  # remove any trailing slashes
+	my ($source_dir,$source_stub)=($source =~ m{^(.*)/([^/]+)$}); # split to path and final dir
+	$source_dir="./" if (! $source_dir);
+
+	#set last modified as timestamp
+	my $mod_time=(stat($source))[9];
+	my $timestamp=get_timestamp($mod_time);
+
+	my $archive_dir="${source_dir}/${source_stub}-${timestamp}";
+
+	eval { make_path($archive_dir) } or do { logentry_then_die("Could not create temporary directory $archive_dir for archiving."); };
+	if(-e "${source}.history") {
+		eval { copy("${source}.history",$archive_dir) } or do { logentry_then_die("Could not copy original genomicsDB history ${source}.history to $archive_dir for archiving."); };
+	} else {
+		logentry("No history file located for original GenomicsDB.  No history is included in the archive file.",1);
 	}
-	# otherwise return 0 to indicate to main that original genomicsDB has been archived and removed.
-	else {
-		logentry("The original genomicsDB $source has been successfully archived to $tarball.");
+	eval { move($source,"${archive_dir}/${source_stub}") } or do { logentry_then_die("Could not move original genomicsDB $source to $archive_dir for archiving."); };
+	eval { $tarball=tarball_dir($archive_dir,$source_dir) } or do { logentry_then_die("Could not create tarball of $archive_dir ($@)."); };
+	eval { remove_tree($archive_dir) } or do { logentry_then_die("Could not delete temporary directory ($archive_dir)."); };
+
+	if (-e $tarball && ! -e $source) {
+		logentry("The original genomicsDB $source has been successfully archived to $tarball."),4;
+		return 0;
+	} else {
+		logentry_then_die("Something unexpected happening while archiving $source, not clear if operation succeeded.");
 	}
 }
 
@@ -187,7 +193,7 @@ sub build_listfile {
 	my @items=@{(shift)};
 	my $file_out=shift;
 	logentry("Writing list to $file_out",5);
-	open(my $LIST_OUT, ">", "$file_out") || logentry_then_die("Cannot create list file $file_out");
+	open(my $LIST_OUT, ">", "$file_out") or logentry_then_die("Cannot create list file $file_out");
 	foreach my $item (@items) {
 			print $LIST_OUT "$item\n";
 	}
@@ -207,7 +213,7 @@ sub build_vcf_index {
 	if(-f $vcf_file && $vcf_file=~/vcf$/) {
 		unless(-f $idx_file) {
 			logentry("VCF index not found for $vcf_file: Building.",4);
-			my $sys=cmd("$gatk IndexFeatureFile --feature-file $vcf_file","Calling GATK to build VCF index for $vcf_file") || logentry_then_die("Building VCF index for $vcf_file.  Cannot create $idx_file");
+			my $sys=cmd("$gatk IndexFeatureFile --feature-file $vcf_file","Calling GATK to build VCF index for $vcf_file") or logentry_then_die("Building VCF index for $vcf_file.  Cannot create $idx_file");
 		}
 	}
 	else {
@@ -227,7 +233,7 @@ sub check_dependency {
 	my $err_msg=shift;    # optional error message information (e.g. where to get software)
 	my $report_out=shift;	# If defined . . . print version info to log
 	$err_msg="" if (! $err_msg);
-	my $path=which $prog || logentry_then_die("External dependency '${prog}' not installed in system PATH. ${err_msg}\n");
+	my $path=which $prog or logentry_then_die("External dependency '${prog}' not installed in system PATH. ${err_msg}\n");
 	chomp($path);
 	my $ver="unknown";
 	if($report_out) {
@@ -443,6 +449,7 @@ return $info;
 sub gdb_history {
 	my $gdb=shift;
 	my $log_path=shift;
+	my $gdb_archived=shift;
 	my @in=@{(shift)};
 
 	$gdb =~ s!/+$!!;  # remove any trailing slashes
@@ -454,9 +461,9 @@ sub gdb_history {
 	if (-e "${gdb}.history") {
 		$sep="Appending to genomicsDB $gdb: ";
 	}
-	elsif (-e "${gdb}") {
-		$warn="WARNING: GenomicsDB located without an associated history file.  This history file is incomplete!\n";
-		logentry("WARNING: GenomicsDB located without an associated history file.  Creating new history file: history chain will be incomplete.",2);
+	elsif ($gdb_archived) {
+		$warn="WARNING: Original GenomicsDB does not appear to have an associated history file.  This history file is incomplete!\n";
+		logentry("Original GenomicsDB does not appear to have an associated history file.  Creating new history file: history chain will be incomplete.",2);
 		$sep="Appending to genomicsDB $gdb: Adding files ";
 	}
 	else {
@@ -476,7 +483,7 @@ sub gdb_history {
 sub get_dir_filelist {
 	my $dirpath=shift;
 	my $pattern=shift;
-	opendir(my $DIR,$dirpath) || logentry_then_die("Could not open directory path: $dirpath");
+	opendir(my $DIR,$dirpath) or logentry_then_die("Could not open directory path: $dirpath");
 	my @files=grep /$pattern/i, readdir($DIR);
 	close($DIR);
 	s/^/$dirpath\// for @files;  #prepend $in (dirpath) to each element
@@ -553,7 +560,7 @@ sub get_tmpdir {
 
 	my $randStr=String::Random->new;
 	$tmpdir.="/".$randStr->randregex("\\w{20}")."/";
-	mkdir($tmpdir) || logentry_then_die("Could not create temporary directory $tmpdir.");
+	mkdir($tmpdir) or logentry_then_die("Could not create temporary directory $tmpdir.");
 	return $tmpdir;
 }
 
@@ -672,6 +679,7 @@ sub logentry {
 	}
 	elsif($level==1){
 		$sep="WARNING:";
+		cluck($message);
 	}
 	elsif($level==2){
 		$sep="INFO:";
@@ -689,8 +697,8 @@ sub logentry {
 # Enter time stamped log entry
 sub logentry_then_die {
 	my $message=shift;
-	logentry($message, 0);
-	die($message);
+	logentry(longmess($message), 0); #log error with Carp backtrace
+	confess($message); #die with backtrace to STDERR
 }
 
 
@@ -845,7 +853,7 @@ sub stage_files {
 	my @stage_files=@{(shift)};
 	my @new_stage_files;
 	foreach my $file (@stage_files) {
-		copy($file,$target) || logentry_then_die("File $file could not be copied to tmpdir $target.  Ensure file exists and that tmpdir has sufficient space.");
+		copy($file,$target) or logentry_then_die("File $file could not be copied to tmpdir $target.  Ensure file exists and that tmpdir has sufficient space.");
 		my $filename=fileparse($file);
 		push(@new_stage_files, $target."/".$filename);
 	}
@@ -864,7 +872,7 @@ sub stage_gdb {
 
 	#If exists stage the directory . . . if not only return the staged path
 	if(-e $source) {
-		dircopy($source,$target) || logentry_then_die("Directory $source could not be copied to tmpdir $target.  Ensure directory exists and that tmpdir has sufficient space.");
+		dircopy($source,$target) or logentry_then_die("Directory $source could not be copied to tmpdir $target.  Ensure directory exists and that tmpdir has sufficient space.");
 	}
 	else {
 		logentry("GenomicsDB $source does not exist.  Setting staged path for new GenomicsDB: $target.",4);
@@ -901,7 +909,7 @@ sub tarball_dir {
 	my $gzip="gzip";
 	my $pigz=check_dependency("pigz","--version");
 	$gzip="${pigz} --best --recursive -p $ncpu" if($pigz && $ncpu>1);
-	eval { my $sys=cmd("tar --use-compress-program='$gzip' -cf ${target_dir}/${source_stub}.tar.gz $source","Compressing copy of $source",1) } || die($@);
+	eval { my $sys=cmd("tar --use-compress-program='$gzip' -cf ${target_dir}/${source_stub}.tar.gz $source","Compressing copy of $source",1) } or logentry_then_die($@);
 	return "${target_dir}/${source_stub}.tar.gz";
 }
 

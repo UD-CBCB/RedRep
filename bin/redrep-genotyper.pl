@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-genotyper.pl Ver. 2.3 [08/07/2020 rev]";
+my $ver="redrep-genotyper.pl Ver. 2.3 [08/12/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -13,6 +13,7 @@ use lib $ENV{'REDREPLIB'};
 use RedRep::Utils;
 use RedRep::Utils qw(archive_gdb build_argument_list build_fofn build_listfile build_vcf_index check_genomicsdb gdb_history get_timestamp read_listfile retrieve_contigs split_in_files);
 use Getopt::Long qw(:config no_ignore_case);
+use Carp qw(cluck confess longmess);
 use Parallel::ForkManager;
 use Pod::Usage;
 use POSIX qw(ceil floor);
@@ -29,7 +30,7 @@ use Data::Dumper;
 sub split_in_files;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$genomics_db,$no_geno,$gvcf_files,$db_load_args);
+my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$savetmp,$genomics_db,$genomics_db_final,$no_geno,$gvcf_files,$db_load_args);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -125,7 +126,7 @@ if(-d $outDir) {
 
 
 ### CREATE OUTPUT DIR AND OPEN LOG
-mkdir($outDir) || die("ERROR: Can't create output directory $outDir");
+mkdir($outDir) || confess("ERROR: Can't create output directory $outDir");
 $logOut="$outDir/log.genotyper.txt" if (! $logOut);
 open(our $LOG, "> $logOut");
 logentry("SCRIPT STARTED ($ver)",2);
@@ -144,9 +145,14 @@ my $contig_list				= $intermed."/contig.list";
 my $interval_list			=	$intermed."/interval.list";
 my $interval_vcfs_fofn=	$intermed."/interval_vcfs.fofn.list";
 
-$genomics_db =~ s!^gendb://!!;        # remove gendb prefix if present
-$genomics_db = "${outDir}/${genomics_db}" if($genomics_db !~ m!/!);    # place in outDir if no path given
-my $genomics_db_final=$genomics_db;		# keep this version as final output location
+if($genomics_db) {
+	$genomics_db =~ s!^gendb://!!;					# remove gendb prefix if present
+	$genomics_db =~ s!/$!!;						     	# remove trailing slash if present
+	# If doesn't contain a path and if it is not referring to an existing subdir in working dir
+	if($genomics_db !~ m!/! && ! -d $genomics_db) {
+		$genomics_db = "${outDir}/${genomics_db}";    # place in outDir
+	}
+}
 
 mkdir($intermed) || logentry_then_die("Can't create temporary directory $intermed");
 mkdir($interval_gvcf_dir) || logentry_then_die("Can't create temporary directory $interval_gvcf_dir");
@@ -218,6 +224,7 @@ logentry("Checking External Dependencies",3);
 	build_listfile(\@intervals,$interval_list);
 
 	my @files;
+	my @files_orig;
 	my @vcf_indexes;
 	my $genomics_db_in;
 	my $gvcf_count;
@@ -230,18 +237,19 @@ logentry("Checking External Dependencies",3);
 		logentry_then_die("GenomicsDB $genomics_db specified as input does not exist.") if (! -e $in_dir);
 		if($stage) {
 			logentry("STAGING FILES TO $tmpdir",3);
-			$in_dir=stage_gdb($in_dir);
+			$in_dir=stage_gdb($in_dir,$tmpdir);
 			logentry("GenomicsDB $in staged to $in_dir (for read operations only).",4);
 			logentry("Working copy of GenomicsDB does not appear to be on a shared file system.  Setting environment variable TILEDB_DISABLE_FILE_LOCKING=0",4);
 			$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=0;
 		}
-		$genomics_db="gendb://";
-		$genomics_db.=check_genomicsdb($in_dir,1);
+		#$genomics_db="gendb://";
+		$genomics_db=check_genomicsdb($in_dir,1);
 		$genomics_db_in=1;
 	}
 	#FILE INPUT
 	else {
 		@files=split_in_files($in, qr/\.g\.vcf$/, $gvcf_fofn_out);
+		@files_orig=@files;
 		$gvcf_count=scalar(@files);
 		logentry("G.VCF FILES DETECTED: ".$gvcf_count,4);
 
@@ -265,14 +273,23 @@ logentry("Checking External Dependencies",3);
 
 		if($genomics_db) {
 			logentry("SETTING WORKING COPY OF GENOMICS_DB",3);
+			$genomics_db_final=$genomics_db;		# keep this version as final output location
 			$genomics_db =~ m{/?([^/]+)/?$};
 			$genomics_db=$intermed."/".$1;
+
+			#If already existing database, copy to working location
+			if(-e $genomics_db_final) {
+				logentry("Existing GenomicsDB ($genomics_db_final) being staged to ($genomics_db) as working copy",4);
+				dircopy($genomics_db_final,$genomics_db);
+			} else {
+				logentry("No GenomicsDB found at $genomics_db_final, new genomicsDB being staged to ($genomics_db) as working copy",4);
+			}
+
 			if($tmp_in_outdir) {
 				logentry("WARNING: When using --tmp_in_outdir working copy of the genomicsDB will be stored in $outDir, this may cause problems if $outDir is on a shared file system (e.g. NFS).",2);
 				logentry("Working copy of GenomicsDB may be on a shared file system.  Setting environment variable TILEDB_DISABLE_FILE_LOCKING=1.",4);
 				$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=1;
-			}
-			else {
+			} else {
 				logentry("Working copy of GenomicsDB does not appear to be on a shared file system.  Setting environment variable TILEDB_DISABLE_FILE_LOCKING=0.",4);
 				$ENV{'TILEDB_DISABLE_FILE_LOCKING'}=0;
 			}
@@ -296,7 +313,7 @@ logentry("Checking External Dependencies",3);
 		}
 		$sys=cmd("$gatk GenomicsDBImport $db_out_method $genomics_db $db_load_args --variant $gvcf_fofn_out --reference $refFasta --intervals $interval_list --batch-size $gdb_batchsize $gatkarg_GenomicsDBImport","Building GenomicsDB: $genomics_db");
 		logentry("FINISH EXPORT TO GATK GENOMICSDB $genomics_db",3);
-		$genomics_db="gendb://".$genomics_db;
+#		$genomics_db="gendb://".$genomics_db;
 	}
 
 
@@ -307,9 +324,8 @@ logentry("Checking External Dependencies",3);
 			$manager->start and next;
 			my $geno_in;
 			if($genomics_db) {
-				$geno_in=$genomics_db;
-			}
-			else {
+				$geno_in="gendb://".$genomics_db;
+			}	else {
 				logentry("Beginning CombineGVCFs on interval $interval",4);
 				my $interval_gvcf_out="$interval_gvcf_dir/interval-$interval.g.vcf";
 				$sys=cmd("$gatk CombineGVCFs --reference $refFasta --intervals $interval $gvcf_files --output $interval_gvcf_out --tmp-dir $tmpdir $gatkarg_CombineGVCFs","Calling GATK CombineGCVFs");
@@ -336,8 +352,7 @@ logentry("Checking External Dependencies",3);
 		logentry("MERGING VCFs",3);
 		$sys=cmd("$gatk MergeVcfs --INPUT $interval_vcfs_fofn --OUTPUT $combined_vcf_out --TMP_DIR $tmpdir","Calling GATK MergeVcfs");
 		logentry("VCF MERGE COMPLETE",3);
-	}
-	else {
+	}	else {
 		logentry("SKIPPING GENOTYPING: option --no_geno specified",3);
 	}
 
@@ -345,33 +360,53 @@ logentry("Checking External Dependencies",3);
 	logentry("FILE CLEAN UP",3);
 	if($keep && ! $tmp_in_outdir) {
 		logentry("Saving intermediate tmp directory",4);
-		$sys=dircopy($intermed, "$outDir/intermed");
-	}
-
-	if(-e $genomics_db_final) {
-		logentry("Archiving original genomicsDB",4);
-		eval { archive_gdb($genomics_db_final) } or
-		do {
-			logentry("Could not archive original genomicsDB $genomics_db_final.",2);
-			until(! -e $genomics_db_final) {
-				$genomics_db_final="${genomics_db_final}.new";
-			}
-			logentry("Saving genomicsDB to alternate location $genomics_db_final.",2);
+		eval { $sys=dircopy($intermed, "$outDir/intermed") } or do {
+			$savetmp=1;
+			logentry("Could not copy intermediate file directory ($intermed) to final output directory ($outDir) as requested with --keep option.  Retaining temporary files after execution.",1);
 		};
 	}
-	logentry("Moving genomicsDB to output location",4);
-	gdb_history($genomics_db_final,$logOut,\@files);
-	move($genomics_db,$genomics_db_final);
-	if($genomics_db_final !~ /$outDir/) {
-		$genomics_db_final =~ m{/?([^/]+)/?$};
-		symlink($genomics_db_final,"$outDir/$1");
-		symlink("${genomics_db_final}.history","${outDir}/$1.history");
+	my $gdb_archived=0;
+	# If a genomicsDB was modified
+	if($genomics_db && ! $genomics_db_in) {
+		# If genomicsDB was in a temporary location move to the final location
+		if($genomics_db_final) {
+			# If final location already exists make an archive copy first
+			if(-e $genomics_db_final) {
+				$gdb_archived=1;
+				logentry("Archiving original genomicsDB",4);
+				eval { archive_gdb($genomics_db_final) } or do {
+					logentry("Could not archive original genomicsDB $genomics_db_final.",1);
+					until(! -e $genomics_db_final) {
+						$genomics_db_final="${genomics_db_final}.new";
+					}
+					logentry("Saving genomicsDB to alternate location $genomics_db_final.",1);
+				};
+			}
+			logentry("Copying genomicsDB to output location",4);
+#logentry("DEBUGGING: genomics_db: $genomics_db; genomics_db_final: $genomics_db_final\n",6);
+			eval { dircopy($genomics_db,$genomics_db_final) } or do {
+				$savetmp=1;
+				logentry("Could not move working copy of genomicsDB ($genomics_db) to final location ($genomics_db_final). Retaining temporary files after execution.",1);
+			};
+		}	else {
+			$genomics_db_final=$genomics_db;
+		}
+		gdb_history($genomics_db_final,$logOut,$gdb_archived,\@files_orig);
+		#If final location for db is not in the output, make symbolic links
+		if($genomics_db_final !~ /$outDir/) {
+			$genomics_db_final =~ m{/?([^/]+)/?$};
+			symlink($genomics_db_final,"$outDir/$1");
+			symlink("${genomics_db_final}.history","${outDir}/$1.history");
+		}
 	}
 
-
-	logentry("Removing tmp files",4);
-	$sys=remove_tree($tmpdir);
-
+	unless($savetmp) {
+		logentry("Removing tmp files",4);
+		$sys=remove_tree($tmpdir);
+	}
+	else {
+		logentry("Temporary files retained in ${tmpdir} on execution node (".hostname.") to prevent data loss.  See previous warning(s) for cause.",1);
+	}
 
 	# RETURN ENVIRONMENT VARIABLES TO INITIAL STATE
 	if($tile_init_state) {
