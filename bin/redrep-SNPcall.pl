@@ -26,8 +26,9 @@ use Sys::Hostname qw(hostname);
 
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$metaFile,$keep,$version,$refFasta,$dcov,$dfrac,$dt,
-    $intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed);
+our($outDir,$intermed,$tmpdir,$debug,$no_stage_intermed,$tmp_in_outdir); 	# globals to properly handle file unstaging in case of fatal errors
+my($in,$help,$manual,$force,$metaFile,$version,$refFasta,$dcov,$dfrac,$dt,$intervals,$stage);
+our($keep);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -120,7 +121,7 @@ logentry("SCRIPT STARTED ($ver)",2);
 
 ### OUTPUT FILE LOCATIONS
 $tmpdir								=	get_tmpdir($tmpdir);
-my $intermed					=	"$tmpdir/intermed";
+$intermed   					=	"$tmpdir/intermed";
 $intermed							=	"$outDir/intermed" if($tmp_in_outdir);
 my $gvcf_dir					=	$outDir."/gvcf";
 my $stage_dir					=	$tmpdir."input/";

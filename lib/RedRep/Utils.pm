@@ -99,21 +99,21 @@ sub archive_gdb {
 
 	my $archive_dir="${source_dir}/${source_stub}-${timestamp}";
 
-	eval { make_path($archive_dir) } or do { logentry_then_die("Could not create temporary directory $archive_dir for archiving."); };
+	eval { make_path($archive_dir) } or do { logentry_then_die("Could not create temporary directory $archive_dir for archiving.",1); };
 	if(-e "${source}.history") {
-		eval { copy("${source}.history",$archive_dir) } or do { logentry_then_die("Could not copy original genomicsDB history ${source}.history to $archive_dir for archiving."); };
+		eval { copy("${source}.history",$archive_dir) } or do { logentry_then_die("Could not copy original genomicsDB history ${source}.history to $archive_dir for archiving.",1); };
 	} else {
 		logentry("No history file located for original GenomicsDB.  No history is included in the archive file.",1);
 	}
-	eval { move($source,"${archive_dir}/${source_stub}") } or do { logentry_then_die("Could not move original genomicsDB $source to $archive_dir for archiving."); };
-	eval { $tarball=tarball_dir($archive_dir,$source_dir) } or do { logentry_then_die("Could not create tarball of $archive_dir ($@)."); };
-	eval { remove_tree($archive_dir) } or do { logentry_then_die("Could not delete temporary directory ($archive_dir)."); };
+	eval { move($source,"${archive_dir}/${source_stub}") } or do { logentry_then_die("Could not move original genomicsDB $source to $archive_dir for archiving.",1); };
+	eval { $tarball=tarball_dir($archive_dir,$source_dir) } or do { logentry_then_die("Could not create tarball of $archive_dir ($@).",1); };
+	eval { remove_tree($archive_dir) } or do { logentry_then_die("Could not delete temporary directory ($archive_dir).",1); };
 
 	if (-e $tarball && ! -e $source) {
 		logentry("The original genomicsDB $source has been successfully archived to $tarball."),4;
 		return 1;
 	} else {
-		logentry_then_die("Something unexpected happening while archiving $source, not clear if operation succeeded.");
+		logentry_then_die("Something unexpected happenned while archiving $source, not clear if operation succeeded.",1);
 	}
 }
 
@@ -697,7 +697,20 @@ sub logentry {
 # Enter time stamped log entry
 sub logentry_then_die {
 	my $message=shift;
+	my $no_unstage=shift;  # if set don't remove or unstage temp/intermed files -- used when die is expected to be caught
 	logentry(longmess($message), 0); #log error with Carp backtrace
+	logentry("Error encountered moving intermediate files to $main::outDir", 0);
+	logentry("Cleaning up temporary files", 0);
+	unless($no_unstage) { #do nothing
+		unless($main::no_stage_intermed) {  #no need to move as its already in outDir
+			dircopy(${main::intermed},"${main::outDir}/intermed") if(${main::intermed} ne "${main::outDir}/intermed");
+		}
+		if($main::tmp_in_outdir || $main::debug) { # remove tmp
+			remove_tree($main::tmpdir);
+		}	else {
+			remove_tree($main::intermed); # no need for two copies of this folder
+		}
+	}
 	confess($message); #die with backtrace to STDERR
 }
 

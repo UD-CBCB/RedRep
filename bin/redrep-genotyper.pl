@@ -30,7 +30,9 @@ use Data::Dumper;
 sub split_in_files;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$in,$outDir,$help,$manual,$force,$keep,$version,$refFasta,$intervals,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed,$savetmp,$genomics_db,$genomics_db_final,$no_geno,$gvcf_files,$db_load_args);
+our($outDir, $intermed, $tmpdir, $debug, $no_stage_intermed, $tmp_in_outdir); 	# globals to properly handle file unstaging in case of fatal errors
+my($in,$help,$manual,$force,$version,$refFasta,$intervals,$stage,$no_stage_intermed,$savetmp,$genomics_db,$genomics_db_final,$no_geno,$gvcf_files,$db_load_args);
+our($keep);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;									# default post-processed
@@ -87,6 +89,7 @@ pod2usage( -msg  => "ERROR!  Required argument -r (reference fasta) missing.\n",
 pod2usage( -msg  => "ERROR!  Required argument -o (output directory) missing.\n", -exitval => 2)  if (! $outDir);
 pod2usage( -msg  => "ERROR!  Option --genomicsdb must be specified when --db_load_only is used.\n", -exitval => 2)  if ($no_geno && ! $genomics_db);
 
+
 ### DEBUG MODE
 if($debug) {
 	require warnings; import warnings;
@@ -99,7 +102,6 @@ if($debug) {
 	}
 	$tmp_in_outdir=1 if($debug>2);
 }
-
 
 
 ### SET DEFAULT METHOD OF FILE PROPAGATION
@@ -134,9 +136,9 @@ logentry("SCRIPT STARTED ($ver)",2);
 
 ### OUTPUT FILE LOCATIONS
 $tmpdir								=	get_tmpdir($tmpdir);
-my $intermed					=	"$tmpdir/intermed";
+$intermed							=	"$tmpdir/intermed";
 $intermed							=	"$outDir/intermed" if($tmp_in_outdir);
-my $gvcf_fofn_out					=	"$intermed/gvcf.fofn.list";
+my $gvcf_fofn_out			=	"$intermed/gvcf.fofn.list";
 my $interval_gvcf_dir	=	"$intermed/gvcf_intervals/";
 my $interval_vcf_dir	=	"$intermed/vcf_intervals/";
 my $combined_vcf_out	=	"$outDir/combined.vcf";

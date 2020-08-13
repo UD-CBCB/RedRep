@@ -27,8 +27,9 @@ sub binClass;
 sub centroid_rename;
 
 ### ARGUMENTS WITH NO DEFAULT
-my($debug,$inFile,$inFile2,$outDir,$help,$manual,$force,$keep,$version,$hist_stats,$stage,$tmpdir,$tmp_in_outdir,$no_stage_intermed);
-
+our($outDir,$intermed,$tmpdir,$debug,$no_stage_intermed,$tmp_in_outdir); 	# globals to properly handle file unstaging in case of fatal errors
+my($inFile,$inFile2,$help,$manual,$force,$version,$hist_stats,$stage);
+our($keep);
 
 ### ARGUMENTS WITH DEFAULT
 my $logOut;										# default post-processed
@@ -141,7 +142,7 @@ logentry("SCRIPT STARTED ($ver)",2);
 
 ### OUTPUT FILE LOCATIONS
 $tmpdir								=	get_tmpdir($tmpdir);
-my $intermed					=	"$tmpdir/intermed";
+$intermed							=	"$tmpdir/intermed";
 $intermed							=	"$outDir/intermed" if($tmp_in_outdir);
 
 mkdir($intermed);
