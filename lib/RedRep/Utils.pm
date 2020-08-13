@@ -703,12 +703,15 @@ sub logentry_then_die {
 	logentry("Cleaning up temporary files", 0);
 	unless($no_unstage) { #do nothing
 		unless($main::no_stage_intermed) {  #no need to move as its already in outDir
+			logentry("Moving intermediate result files to output directory ${main::outDir}/intermed for troubleshooting",4);
 			dircopy(${main::intermed},"${main::outDir}/intermed") if(${main::intermed} ne "${main::outDir}/intermed");
 		}
 		if($main::tmp_in_outdir || $main::debug) { # remove tmp
+			logentry("Cleaning up temporary files",4);
 			remove_tree($main::tmpdir);
 		}	else {
-			remove_tree($main::intermed); # no need for two copies of this folder
+			logentry("Temporary files have been left behind on the execution node in $main::tmpdir for troubleshooting because the --debug flag was used.",1) if($main::debug);
+			remove_tree($main::intermed); # no need to leave two copies of this folder
 		}
 	}
 	confess($message); #die with backtrace to STDERR
