@@ -31,7 +31,7 @@ The following software are required for various steps in the RedRep pipeline and
   cutadapt (1.14)
   fastqc (0.11.5)
   fastx toolkit (0.0.13)
-  GATK (4.1.4.0)
+  GATK (4.1.8.1)
   Java Runtime Environment - JRE (Open JDK JRE 1.8.0_151-b12)
   Perl (5.24.3)
   Picard tools (2.19)
