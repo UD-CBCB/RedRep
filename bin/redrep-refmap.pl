@@ -425,7 +425,7 @@ Displays the current version.
 
 =item java (tested with version 1.8.0_151-b12 OpenJDK Runtime Environment)
 
-=item GATK (tested with version 4.1.4.0)
+=item GATK (tested with version 4.1.8.1)
 
 =back
 

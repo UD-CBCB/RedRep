@@ -487,7 +487,7 @@ Displays the current version.
 
 =over 3
 
-=item GATK (tested with version 4.1.4.0)
+=item GATK (tested with version 4.1.8.1)
 
 =back
 
