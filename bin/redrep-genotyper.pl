@@ -383,7 +383,6 @@ logentry("Checking External Dependencies",3);
 				};
 			}
 			logentry("Copying genomicsDB to output location",4);
-#logentry("DEBUGGING: genomics_db: $genomics_db; genomics_db_final: $genomics_db_final\n",6);
 			eval { dircopy($genomics_db,$genomics_db_final) } or do {
 				$savetmp=1;
 				logentry("Could not move working copy of genomicsDB ($genomics_db) to final location ($genomics_db_final). Retaining temporary files after execution.",1);
@@ -396,7 +395,7 @@ logentry("Checking External Dependencies",3);
 		if($genomics_db_final !~ /$outDir/) {
 			$genomics_db_final =~ m{/?([^/]+)/?$};
 			symlink($genomics_db_final,"$outDir/$1");
-			symlink("${genomics_db_final}.history","${outDir}/$1.history");
+			copy("${genomics_db_final}.history","${outDir}/$1.history");
 		}
 	}
 

@@ -90,12 +90,12 @@ sub archive_gdb {
 	my $tarball;
 
 	$source=~s!/+$!!;  # remove any trailing slashes
-	my ($source_dir,$source_stub)=($source =~ m{^(.*)/([^/]+)$}); # split to path and final dir
+	my ($source_dir,$source_stub)=($source =~ m{^(.*?)/?([^/]+)$}); # split to path and final dir
 	$source_dir="./" if (! $source_dir);
 
 	#set last modified as timestamp
-	my $mod_time=(stat($source))[9];
-	my $timestamp=get_timestamp($mod_time);
+	my $fstat=stat($source);
+	my $timestamp=get_timestamp($fstat->mtime);
 
 	my $archive_dir="${source_dir}/${source_stub}-${timestamp}";
 
@@ -111,7 +111,7 @@ sub archive_gdb {
 
 	if (-e $tarball && ! -e $source) {
 		logentry("The original genomicsDB $source has been successfully archived to $tarball."),4;
-		return 0;
+		return 1;
 	} else {
 		logentry_then_die("Something unexpected happening while archiving $source, not clear if operation succeeded.");
 	}
@@ -904,12 +904,12 @@ sub tarball_dir {
 	my $source=shift;
 	my $target_dir=shift;
 	my $ncpu=${main::ncpu};
-	my ($source_stub)=($source =~ m{/?([^/]+)/?$});
+	my ($source_dir,$source_stub)=($source =~ m{^(.*?)/?([^/]+)/?$});  # *? makes the .* non-greedy
 	my $error;
 	my $gzip="gzip";
 	my $pigz=check_dependency("pigz","--version");
 	$gzip="${pigz} --best --recursive -p $ncpu" if($pigz && $ncpu>1);
-	eval { my $sys=cmd("tar --use-compress-program='$gzip' -cf ${target_dir}/${source_stub}.tar.gz $source","Compressing copy of $source",1) } or logentry_then_die($@);
+	eval { my $sys=cmd("tar --use-compress-program='$gzip' -C $source_dir -cf ${target_dir}/${source_stub}.tar.gz $source","Compressing copy of $source",1) } or logentry_then_die($@);
 	return "${target_dir}/${source_stub}.tar.gz";
 }
 
