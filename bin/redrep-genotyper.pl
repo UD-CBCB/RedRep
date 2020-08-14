@@ -67,7 +67,7 @@ GetOptions (
 	"D|genomicsdb|db=s"								=>	\$genomics_db,
 	"gdb_batchsize=i"									=>	\$gdb_batchsize,
 	"db_load_only"										=>	\$no_geno,
-	"db_load_args"										=>	\$db_load_args,
+	"db_load_args=s"									=>	\$db_load_args,
 
 	"f|force"													=>	\$force,
 	"d|debug:+"												=>	\$debug,
