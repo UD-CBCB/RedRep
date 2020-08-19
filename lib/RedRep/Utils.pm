@@ -925,7 +925,7 @@ sub tarball_dir {
 	my $gzip="gzip";
 	my $pigz=check_dependency("pigz","--version");
 	$gzip="${pigz} --best --recursive -p $ncpu" if($pigz && $ncpu>1);
-	eval { my $sys=cmd("tar --use-compress-program='$gzip' -C $source_dir -cf ${target_dir}/${source_stub}.tar.gz $source","Compressing copy of $source",1) } or logentry_then_die($@);
+	eval { my $sys=cmd("tar --directory $source_dir --use-compress-program='$gzip' -cf ${target_dir}/${source_stub}.tar.gz $source_stub","Compressing copy of $source",1) } or logentry_then_die($@);
 	return "${target_dir}/${source_stub}.tar.gz";
 }
 
