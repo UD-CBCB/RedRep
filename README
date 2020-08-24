@@ -50,7 +50,7 @@ source redrep.profile
 Quality evaluation, trimming, and barcode devolution of sequences in fastq format are done with redrep-qc.pl; the output is a set of fastq files named according to the identifiers in the metadata file and suitable for mapping to a reference. The command syntax is:
 
 	redrep-qc.pl --in=READ1_FILENAME [--in2 READ2_FILENAME]
-		--out =IRNAME --meta=FILENAME [OPTIONS --log=FILENAME --stats=FILENAME
+		--out =DIR_PATH --meta=FILE_PATH [OPTIONS --log=FILE_PATH --stats=FILE_PATH
 		--force --keep_temp --no_pre_qc --no_post_qc --per_barcode_qc
 		--5p_adapt SEQUENCE --3p_adapt SEQUENCE --maxLen=INTEGER
 		--minLen=INTEGER --max_N_run=INTEGER --part=INTEGER --mismatch=INTEGER
@@ -60,26 +60,32 @@ The metafile is tab-delimited and has the following variables (indicated in the 
 
 Making a de novo reference from the input reads is done with redrep-cluster.pl, which accepts as input fastq output for one sample from redrep-qc.pl (fastq files from multiple samples can be manually combined with the cat command), performs clustering of reduced representation reads without a priori reference, and makes reference sequence file in fasta format (the centroid sequences are typically used as the reference). The command line syntax is:
 
-	redrep-cluster.pl --in=FILENAME [--in2=FILENAME]--out=DIRNAME --meta=FILENAME
-		[OPTIONS --log=FILENAME --force --keep_temp --id=FLOAT --minlen=INTEGER
+	redrep-cluster.pl --in=FILE_PATH [--in2=FILE_PATH]--out=DIR_PATH --meta=FILE_PATH
+		[OPTIONS --log=FILE_PATH --force --keep_temp --id=FLOAT --minlen=INTEGER
 		--minqual=INTEGER --minsize=INTEGER --hist_stats --size_bin_start=INTEGER
 		--size_bin_num=INTEGER --size_bin_width=INTEGER --len_bin_start=INTEGER
 		--len_bin_num=INTEGER --len_bin_width=INTEGER --debug --version --help --manual]
 
-Mappping to a references (existing or de novo) is done with redrep-refmap.pl, which accepts fastq output from redrep-qc.pl and fasta-formatted reference sequence(s) and produces indexed bam files for analysis with redrep-SNPcall.pl. The command line syntax is:
+Mapping to a references (existing or de novo) is done with redrep-refmap.pl, which accepts fastq output from redrep-qc.pl and fasta-formatted reference sequence(s) and produces indexed bam files for analysis with redrep-SNPcall.pl. The command line syntax is:
 
-	redrep-refmap.pl --in=FILE_OR_DIR_NAME --out DIRNAME --ref=FILENAME
-		[OPTIONS --log=FILENAME --force --keep_temp --ndiff=INTEGER/FLOAT --stop=INTEGER
+	redrep-refmap.pl --in=FILE_OR_DIR_NAME --out DIR_PATH --ref=FILE_PATH
+		[OPTIONS --log=FILE_PATH --force --keep_temp --ndiff=INTEGER/FLOAT --stop=INTEGER
 		--gap=INTEGER/FLOAT --threads=INTEGER --debug --version --help --manual]
 
 Note: When using a de novo reference created by rederp-cluster for mapping, GATK used by redrep-SNPcall.pl (next step) can be extremely slow. This can be remedied by concatenating the many separate sequences into one long sequence, with each contig/centroid separated by a string of “N” characters (e.g. 40 Ns). redrep-cluster.pl does not currently perform this task, and some custom scripting is required to recover information about which SNPs were called in which centroids.
 
-Variant calling is done with redrep-SNPcall.pl which accepts as input the bam output from redrep-refmap.pl and fasta-formatted reference sequence(s) with indexes and gives as output a variant file in vcf format.
+Variant calling is done with redrep-SNPcall.pl which accepts as input the bam output from redrep-refmap.pl and fasta-formatted reference sequence(s) with indexes and gives as output a variant file in gvcf format.
 
-	redrep-SNPcall.pl--in FILE_OR_DIR_NAME --out DIRNAME --ref=FILENAME
-		[OPTIONS --log=FILENAME --force --keep_temp --threads=INTEGER --mem=INTEGER
-		--downsample_to_coverage=INTEGER --downsample_to_fraction=FLOAT
-		--downsampling_type=[NONE ALL_READS BY_SAMPLE] --debug --version
-		--help --manual]
+	redrep-SNPcall.pl--in FILE_OR_DIR_NAME --out DIR_PATH --ref=FILE_PATH
+		[OPTIONS --log=FILE_PATH --force --keep_temp --threads=INTEGER --mem=INTEGER
+		--intervals=STRING_OR_FILE_PATH --debug --version --help --manual]
+
+Genotype calling is performed with redrep-genotyper.pl which accepts gvcf files from redrep-SNPcall.pl as input and returns an annotated variant file in vcf format.  This program can also be used to load gvcf files from redrep-SNPcall.pl into a genomics_db for later genotyping.
+
+	redrep-genotyper.pl --in FILE_OR_DIR_OR_GENOMICS_DB_PATH --out DIR_PATH --ref=FILE_PATH
+		[OPTIONS --log=FILE_PATH --force --keep_temp --threads=INTEGER --mem=INTEGER
+    --db_load_only --genomicsdb=DIR_PATH --gdb_batchsize=INTEGER --intervals=STRING_OR_FILE_PATH
+    --debug --version --help --manual]
+
 
 More details on options for each utility are available using the --help or --manual flags for the utility.

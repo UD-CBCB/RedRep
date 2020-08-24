@@ -1,6 +1,6 @@
 package RedRep::Utils;
 
-my $ver="RedRep::Utils Ver. 2.3 [08/13/2020 rev]";
+my $ver="RedRep::Utils Ver. 2.31 [08/24/2020 rev]";
 
 use strict;
 use lib $ENV{'REDREPLIB'};
@@ -1016,6 +1016,8 @@ version 2.11
 =item 2.2 - 10/28/2019: Added GATK v4 compatibility.  Added genomicsDB compatibility and many other enhancements including parallelization, documentation, and logging.
 
 =item 2.3 - 8/1/2020: Fixed disk space reporting bugs.  Added stage_gdb function.
+
+=item 2.31 - 8/24/2020: Minr bugs and documentation updates.
 
 =back
 

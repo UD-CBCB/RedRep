@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-genotyper.pl Ver. 2.3 [08/13/2020 rev]";
+my $ver="redrep-genotyper.pl Ver. 2.31 [08/24/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -504,7 +504,7 @@ If more than this number of samples are being imported into GATK GenomicsDB at o
 
 =item B<-L, --intervals>=string
 
-Genomic intervals to genotype.  May consist of one or more ranges separated by a comma (e.g. -L chr1:1-100,chr2:34-500,chr3) or a list file contining 1 interval per line (must have .list extension).  (default: range of the entire reference sequence is anlayzed)
+Genomic intervals to genotype.  May consist of one or more ranges separated by a comma (e.g. -L chr1:1-100,chr2:34-500,chr3) or a list file contining 1 interval per line (must have .list extension).  (default: range of the entire reference sequence is analyzed)
 
 =back
 
@@ -597,6 +597,8 @@ Displays the current version.
 =item 2.2 - 10/28/2019: Added GATK v4 compatibility.  Added genomicsDB compatibility and many other enhancements including parallelization, documentation, and logging.
 
 =item 2.3 - 8/7/2020: Fixed disk space reporting and gdb_batchsize bugs.  Added --db_load_only.  Added genomicsDB batching and staging capabilities.
+
+=item 2.31 - 8/24/2020: Minr bugs and documentation updates.
 
 =back
 

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-my $ver="redrep-qc.pl Ver. 2.3 [08/13/2020 rev]";
+my $ver="redrep-qc.pl Ver. 2.31 [08/24/2020 rev]";
 my $script=join(' ',@ARGV);
 
 use strict;
@@ -1158,6 +1158,8 @@ Displays the current version.
 =item 2.2 - 10/28/2019: Reversed QC report parameters, now default is no pre or post QC report.  Many enhancements including parallelization, documentation, and logging.
 
 =item 2.3 - 8/1/2020: Fixed input file staging and disk space reporting bugs.
+
+=item 2.31 - 8/24/2020: Minr bugs and documentation updates.
 
 =back
 
